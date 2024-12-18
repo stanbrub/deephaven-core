@@ -2,7 +2,7 @@ name: Check CI
 
 on:
   push:
-    branches: [ 'main', 'check/**', 'release/v*' ]
+    branches: [ 'coverage' ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
