@@ -82,7 +82,7 @@ def testGoClient = Docker.registerDockerTask(project, 'testGoClient') {
     containerDependencies.finalizedBy = deephavenDocker.endTask
     network = deephavenDocker.networkName.get()
     parentContainers = [ Docker.registryTask(project, 'go') ]
-    entrypoint = ['./go-test-to-junit.sh', '/out/go-test.xml', '/out/go.log']
+    entrypoint = ['./go-test-to-junit.sh', '/out/go-test.xml', "" + Boolean.getBoolean("coverageEnabled")]
 }
 deephavenDocker.shouldLogIfTaskFails testGoClient
 tasks.check.dependsOn(testGoClient)

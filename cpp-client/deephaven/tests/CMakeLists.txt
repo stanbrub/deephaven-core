@@ -38,7 +38,7 @@ add_executable(dhclient_tests
 )
 
 if (LINUX)
-    target_compile_options(dhclient_tests PRIVATE -Wall -Werror -Wno-deprecated-declarations)
+    target_compile_options(dhclient_tests PRIVATE -Wall -Werror -Wno-deprecated-declarations -coverage)
 endif()
 
 if (WIN32)

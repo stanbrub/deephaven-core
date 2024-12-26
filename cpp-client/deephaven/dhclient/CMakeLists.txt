@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(dhclient)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_BUILD_TYPE "Debug")
 
 # for CMAKE_INSTALL_{dir}
 include(GNUInstallDirs)
@@ -122,7 +123,8 @@ add_library(deephaven::client ALIAS ${PROJECT_NAME})
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 if (LINUX)
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Werror -Wno-deprecated-declarations)
+    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Werror -Wno-deprecated-declarations -coverage)
+    target_link_options(${PROJECT_NAME} PRIVATE -coverage)
 endif()
 
 if (WIN32)
