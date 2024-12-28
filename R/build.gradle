@@ -91,6 +91,23 @@ def testRClient = Docker.registerDockerTask(project, 'testRClient') {
     }
     dockerfile {
         from(Docker.localImageName('r-client'))
+        runCommand('''set -eux; \
+                      rm -fr /out; \
+                      mkdir -p /out; \
+                      apt-get -qq update; \
+                      apt-get -qq -y --no-install-recommends install \
+                        libcurl4-openssl-dev \
+                        libfontconfig1-dev \
+                        libxml2-dev \
+                        libharfbuzz-dev \
+                        libfribidi-dev \
+                        libfreetype6-dev \
+                        libpng-dev \
+                        libtiff5-dev \
+                        libjpeg-dev \
+                        ; \
+                      rm -rf /var/lib/apt/lists/*
+                   ''')
         copyFile('r-tests.sh', "${prefix}/bin/rdeephaven")
         //
         // Setup for test run; we should be inheriting other env vars
