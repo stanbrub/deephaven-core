@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.14)
 project(dhclient_tests)
 
 set(CMAKE_CXX_STANDARD 17)
+set(GCC_COVERAGE_COMPILE_FLAGS "-g -O0 -coverage -fprofile-arcs -ftest-coverage")
+set(GCC_COVERAGE_LINK_FLAGS "-coverage -lgcov")
+set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GCC_COVERAGE_COMPILE_FLAGS}" )
+set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GCC_COVERAGE_LINK_FLAGS}" )
 
 add_executable(dhclient_tests
         src/add_drop_test.cc
@@ -38,7 +42,7 @@ add_executable(dhclient_tests
 )
 
 if (LINUX)
-    target_compile_options(dhclient_tests PRIVATE -Wall -Werror -Wno-deprecated-declarations -coverage)
+    target_compile_options(dhclient_tests PRIVATE -Wall -Werror -Wno-deprecated-declarations)
 endif()
 
 if (WIN32)

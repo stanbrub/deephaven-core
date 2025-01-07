@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.14)
 project(dhclient)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_BUILD_TYPE "Debug")
+set(GCC_COVERAGE_COMPILE_FLAGS "-g -O0 -coverage -fprofile-arcs -ftest-coverage")
+set(GCC_COVERAGE_LINK_FLAGS "-coverage -lgcov")
+set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GCC_COVERAGE_COMPILE_FLAGS}" )
+set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GCC_COVERAGE_LINK_FLAGS}" )
+
 
 # for CMAKE_INSTALL_{dir}
 include(GNUInstallDirs)
@@ -123,8 +127,8 @@ add_library(deephaven::client ALIAS ${PROJECT_NAME})
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 if (LINUX)
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Werror -Wno-deprecated-declarations -coverage)
-    target_link_options(${PROJECT_NAME} PRIVATE -coverage)
+    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Werror -Wno-deprecated-declarations)
+    target_link_options(${PROJECT_NAME} PRIVATE)
 endif()
 
 if (WIN32)

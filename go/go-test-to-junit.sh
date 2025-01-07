@@ -10,7 +10,8 @@ DO_COVERAGE=${2};
 if [[ "${DO_COVERAGE}" == "true" ]]; then
   mkdir -p /out/coverage/
   go test -vet=all -v ./... -coverprofile=c.out 2>&1 | go-junit-report -set-exit-code -iocopy -out "$XML";
-  go tool cover -func=c.out > /out/coverage/go-coverage.tsv;
+  go tool cover -func=c.out -o /out/coverage/go-coverage.tsv;
+  go tool cover -html=c.out -o /out/coverage/go-coverage.html;
 else 
   go test -vet=all -v ./... 2>&1 | go-junit-report -set-exit-code -iocopy -out "$XML";
 fi
