@@ -1,0 +1,74 @@
+name: Coverage
+
+on:
+  workflow_dispatch:
+    inputs:
+  push:
+    branches: [ '**' ]
+  
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: coverage
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup JDK 11
+        id: setup-java-11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Setup JDK 17
+        id: setup-java-17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set JAVA_HOME
+        run: echo "JAVA_HOME=${{ steps.setup-java-11.outputs.path }}" >> $GITHUB_ENV
+
+      - name: Setup gradle properties
+        run: |
+          .github/scripts/gradle-properties.sh >> gradle.properties
+          cat gradle.properties
+
+      - name: Run Gradle Coverage Tasks
+        run: |
+          ./gradlew --scan --continue -Pcoverage.enabled=true check
+          ./gradlew --scan --continue -Pcoverage.enabled=true testSerial
+          ./gradlew --scan --continue -Pcoverage.enabled=true testParallel
+          ./gradlew --scan --continue -Pcoverage.enabled=true testOutOfBand
+          ./gradlew --scan --continue -Pcoverage.enabled=true coverage
+          ./gradlew --scan --continue -Pcoverage.enabled=true coverage-merge
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-results
+          path: |
+            **/build/reports/jacoco/**
+            **/build/reports/coverage/**
+        
+      - name: Upload JVM Error Logs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: check-ci-jvm-err
+          path: |
+            **/*_pid*.log
+            **/core.*
+          if-no-files-found: ignore
+          
