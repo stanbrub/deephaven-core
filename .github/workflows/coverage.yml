@@ -5,14 +5,17 @@ on:
     inputs:
   push:
     branches: [ '**' ]
-  
 
 jobs:
   coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        gradle-task: ['check', 'testSerial', 'testParallel', 'testOutOfBand']
     runs-on: ubuntu-24.04
     concurrency:
-      group: coverage
-      cancel-in-progress: false
+      group: ${{ matrix.gradle-task }}-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,12 +47,9 @@ jobs:
           .github/scripts/gradle-properties.sh >> gradle.properties
           cat gradle.properties
 
-      - name: Run Gradle Coverage Tasks
+      - name: Run gradle ${{ matrix.gradle-task }}
         run: |
-          ./gradlew --scan --continue -Pcoverage.enabled=true check
-          ./gradlew --scan --continue -Pcoverage.enabled=true testSerial
-          ./gradlew --scan --continue -Pcoverage.enabled=true testParallel
-          ./gradlew --scan --continue -Pcoverage.enabled=true testOutOfBand
+          ./gradlew --scan --continue --rerun-tasks -Pcoverage.enabled=true ${{ matrix.gradle-task }}
           ./gradlew --scan --continue -Pcoverage.enabled=true coverage
           ./gradlew --scan --continue -Pcoverage.enabled=true coverage-merge
 
@@ -57,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-results
+          name: coverage-${{ matrix.gradle-task }}-results
           path: |
             **/build/reports/jacoco/**
             **/build/reports/coverage/**
@@ -66,7 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: check-ci-jvm-err
+          name: coverage-${{ matrix.gradle-task }}-jvm-err
           path: |
             **/*_pid*.log
             **/core.*
