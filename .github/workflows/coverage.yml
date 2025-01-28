@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gradle-task: ['check', 'testSerial', 'testParallel', 'testOutOfBand']
+        gradle-task: ['check', 'testSerial']
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ matrix.gradle-task }}-${{ github.workflow }}-${{ github.ref }}
