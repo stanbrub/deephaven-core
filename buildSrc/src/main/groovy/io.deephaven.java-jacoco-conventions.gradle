@@ -11,9 +11,9 @@ jacocoTestReport {
     sourceSets sourceSets.main
     executionData = fileTree(buildDir).include("/jacoco/*.exec")
     reports {
-    	csv.required = true
-	xml.required = true
-	html.required = true
+    	html.required = false
+        csv.required = true
+        xml.required = false
     }
 }
 

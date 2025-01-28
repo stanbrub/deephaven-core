@@ -59,16 +59,6 @@ jobs:
         with:
           name: coverage-${{ matrix.gradle-task }}-results
           path: |
-            **/build/reports/jacoco/**
-            **/build/reports/coverage/**
-        
-      - name: Upload JVM Error Logs
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: coverage-${{ matrix.gradle-task }}-jvm-err
-          path: |
-            **/*_pid*.log
-            **/core.*
-          if-no-files-found: ignore
+            coverage/build/reports/jacoco/**
+            coverage/build/reports/coverage/**
           
