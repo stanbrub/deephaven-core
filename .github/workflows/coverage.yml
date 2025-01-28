@@ -7,7 +7,7 @@ on:
     branches: [ '**' ]
 
 jobs:
-  coverage:
+  coverage-test:
     strategy:
       fail-fast: false
       matrix:
@@ -53,12 +53,66 @@ jobs:
           ./gradlew --scan --continue -Pcoverage.enabled=true coverage
           ./gradlew --scan --continue -Pcoverage.enabled=true coverage-merge
 
-      - name: Upload Test Results
+      - name: Upload Coverage Results
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: coverage-${{ matrix.gradle-task }}-results
           path: |
             coverage/build/reports/jacoco/**
             coverage/build/reports/coverage/**
+            **/build/jacoco/*.exec
+
+  combined-coverage-report:
+    needs: coverage-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
           
+      - name: Download Coverage Results
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          
+      - name: Display structure of downloaded files
+        run: ls -R .
+
+      - name: Setup JDK 17
+        id: setup-java-17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          
+      - name: Setup JDK 11
+        id: setup-java-11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set JAVA_HOME
+        run: echo "JAVA_HOME=${{ steps.setup-java-11.outputs.path }}" >> $GITHUB_ENV
+
+      - name: Setup gradle properties
+        run: |
+          .github/scripts/gradle-properties.sh >> gradle.properties
+          cat gradle.properties
+
+      - name: Run gradle ${{ matrix.gradle-task }}
+        run: |
+          ./gradlew --scan --continue -Pcoverage.enabled=true coverage
+          ./gradlew --scan --continue -Pcoverage.enabled=true coverage-merge
+
+      - name: Upload Combined Coverage Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-coverage-results
+          path: |
+            coverage/build/reports/jacoco/**
+            coverage/build/reports/coverage/**
