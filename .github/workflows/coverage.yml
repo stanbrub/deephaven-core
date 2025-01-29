@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gradle-task: ['check', 'testSerial']
+        gradle-task: ['check', 'testSerial', 'testParallel', 'testOutOfBand']
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ matrix.gradle-task }}-${{ github.workflow }}-${{ github.ref }}
@@ -75,9 +75,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-          
-      - name: Display structure of downloaded files
-        run: ls -R .
 
       - name: Setup JDK 17
         id: setup-java-17
