@@ -188,7 +188,8 @@ public class AggregationProcessor implements AggregationContextFactory {
         baseAggregations.addAll(aggregations);
         baseAggregations.add(includeConstituents
                 ? Partition.of(rollupColumn)
-                : RollupAggregation.nullColumns(rollupColumn.name(), Table.class));
+                : RollupAggregation.nullColumns(
+                        ColumnDefinition.of(rollupColumn.name(), io.deephaven.qst.type.Type.find(Table.class))));
         return new AggregationProcessor(baseAggregations, Type.ROLLUP_BASE);
     }
 
@@ -199,11 +200,12 @@ public class AggregationProcessor implements AggregationContextFactory {
      * @param aggregations The {@link Aggregation aggregations}. Must not be further mutated by the caller. Will not be
      *        mutated by {@link AggregationProcessor}.
      * @param nullColumns Map of group-by column names and data types to aggregate with a null-column aggregation
+     * @param rollupColumn the name of the rollup column in the result, used to traverse to the next lower level nodes
      * @return The {@link AggregationContextFactory}
      */
     public static AggregationContextFactory forRollupReaggregated(
             @NotNull final Collection<? extends Aggregation> aggregations,
-            @NotNull final Map<String, Class<?>> nullColumns,
+            @NotNull final Collection<ColumnDefinition<?>> nullColumns,
             @NotNull final ColumnName rollupColumn) {
         if (aggregations.stream().anyMatch(agg -> agg instanceof Partition)) {
             rollupUnsupported("Partition");
@@ -212,6 +214,31 @@ public class AggregationProcessor implements AggregationContextFactory {
         reaggregations.add(RollupAggregation.nullColumns(nullColumns));
         reaggregations.addAll(aggregations);
         reaggregations.add(Partition.of(rollupColumn));
+        return new AggregationProcessor(reaggregations, Type.ROLLUP_REAGGREGATED);
+    }
+
+    /**
+     * Convert a collection of {@link Aggregation aggregations} to an {@link AggregationContextFactory} for use in
+     * computing a reaggregated table, but without the ability to descend to the lower level (the rollupColumn is null).
+     *
+     * @param aggregations The {@link Aggregation aggregations}. Must not be further mutated by the caller. Will not be
+     *        mutated by {@link AggregationProcessor}.
+     * @param nullColumns Map of group-by column names and data types to aggregate with a null-column aggregation
+     * @param rollupColumn the name of the rollup column in the result, which is always a null result
+     * @return The {@link AggregationContextFactory}
+     */
+    public static AggregationContextFactory forRollupReaggregatedLeaf(
+            @NotNull final Collection<? extends Aggregation> aggregations,
+            @NotNull final Collection<ColumnDefinition<?>> nullColumns,
+            @NotNull final ColumnName rollupColumn) {
+        if (aggregations.stream().anyMatch(agg -> agg instanceof Partition)) {
+            rollupUnsupported("Partition");
+        }
+        final Collection<Aggregation> reaggregations = new ArrayList<>(aggregations.size() + 2);
+        reaggregations.add(RollupAggregation.nullColumns(nullColumns));
+        reaggregations.addAll(aggregations);
+        reaggregations.add(RollupAggregation
+                .nullColumns(ColumnDefinition.of(rollupColumn.name(), io.deephaven.qst.type.Type.find(Table.class))));
         return new AggregationProcessor(reaggregations, Type.ROLLUP_REAGGREGATED);
     }
 
@@ -508,9 +535,14 @@ public class AggregationProcessor implements AggregationContextFactory {
                 }
                 final IterativeChunkedAggregationOperator operator = operators.get(ii);
                 if (operator instanceof SsmChunkedMinMaxOperator) {
-                    final SsmChunkedMinMaxOperator minMaxOperator = (SsmChunkedMinMaxOperator) operator;
-                    addOperator(minMaxOperator.makeSecondaryOperator(isMin, resultName), null, inputName);
-                    return;
+                    final Collection<? extends ColumnSource<?>> resultColumns = operator.getResultColumns().values();
+                    Assert.eq(1, "1", resultColumns.size(), "SsmChunkedMinMaxOperator.resultColumns.size()");
+                    final Class<?> existingOperatorType = resultColumns.iterator().next().getType();
+                    if (existingOperatorType == type) {
+                        final SsmChunkedMinMaxOperator minMaxOperator = (SsmChunkedMinMaxOperator) operator;
+                        addOperator(minMaxOperator.makeSecondaryOperator(isMin, resultName), null, inputName);
+                        return;
+                    }
                 }
             }
             addOperator(makeMinOrMaxOperator(type, resultName, isMin, isAddOnly || isBlink), inputSource, inputName);
@@ -567,7 +599,7 @@ public class AggregationProcessor implements AggregationContextFactory {
         }
 
         final void descendingSortedFirstOrLastUnsupported(@NotNull final SortColumn sortColumn, final boolean isFirst) {
-            if (sortColumn.order() == SortColumn.Order.ASCENDING) {
+            if (sortColumn.isAscending()) {
                 return;
             }
             throw new UnsupportedOperationException(String.format("%s does not support sort order in %s",

@@ -8,7 +8,7 @@
 package io.deephaven.vector;
 
 import io.deephaven.base.verify.Require;
-import io.deephaven.engine.primitive.iterator.CloseablePrimitiveIteratorOfFloat;
+import io.deephaven.engine.primitive.value.iterator.ValueIteratorOfFloat;
 import io.deephaven.util.annotations.ArrayType;
 import io.deephaven.util.annotations.ArrayTypeGetter;
 import org.jetbrains.annotations.NotNull;
@@ -62,9 +62,9 @@ public final class FloatVectorDirect implements FloatVector {
     }
 
     @Override
-    public CloseablePrimitiveIteratorOfFloat iterator(final long fromIndexInclusive, final long toIndexExclusive) {
+    public ValueIteratorOfFloat iterator(final long fromIndexInclusive, final long toIndexExclusive) {
         if (fromIndexInclusive == 0 && toIndexExclusive == data.length) {
-            return CloseablePrimitiveIteratorOfFloat.of(data);
+            return ValueIteratorOfFloat.of(data);
         }
         return FloatVector.super.iterator(fromIndexInclusive, toIndexExclusive);
     }
@@ -91,6 +91,23 @@ public final class FloatVectorDirect implements FloatVector {
         }
         return FloatVector.equals(this, obj);
     }
+
+    // region compareTo
+    @Override
+    public int compareTo(final FloatVector o) {
+        if (o instanceof FloatVectorDirect) {
+            // The byte, short, integer, and long versions can use direct vector comparisons as our order matches the
+            // natural order of numbers.
+            //
+            // Float and double can not use direct vector comparisons. Although NaN works because Float.compare and
+            // Double.compare sort NaNs last, as we do for Deephaven values; and the Arrays.compare is defined to work
+            // as Float.compare. However, Float.compare(0f,-0) does not produce 0 but rather ranks -0 as less than 0.
+            // UNCOMMENT FOR INTEGRALS: return Arrays.compare(data, ((FloatVectorDirect) o).data);
+        }
+        return FloatVector.super.compareTo(o);
+    }
+
+    // endregion compareTo
 
     @Override
     public int hashCode() {

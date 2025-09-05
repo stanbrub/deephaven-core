@@ -92,6 +92,22 @@ class Credentials(JObjectWrapper):
         return cls(_JCredentials.basic(access_key_id, secret_access_key))
 
     @classmethod
+    def session(cls, access_key_id: str, secret_access_key: str, session_token: str) -> 'Credentials':
+        """
+        Session credentials provider with the specified access key id, secret access key, and session token.
+        This is useful when using temporary credentials from AWS STS or similar services.
+
+        Args:
+            access_key_id (str): the access key id, used to identify the user.
+            secret_access_key (str): the secret access key, used to authenticate the user.
+            session_token (str): the session token, used for temporary credentials.
+
+        Returns:
+            Credentials: the credentials object.
+        """
+        return cls(_JCredentials.session(access_key_id, secret_access_key, session_token))
+
+    @classmethod
     def anonymous(cls) -> 'Credentials':
         """
        Anonymous credentials provider, which can only be used to read data with S3 policy set to allow anonymous access.
@@ -128,6 +144,7 @@ class S3Instructions(JObjectWrapper):
                  fragment_size: Optional[int] = None,
                  connection_timeout: Optional[DurationLike] = None,
                  read_timeout: Optional[DurationLike] = None,
+                 write_timeout: Optional[DurationLike] = None,
                  access_key_id: Optional[str] = None,
                  secret_access_key: Optional[str] = None,
                  anonymous_access: bool = False,
@@ -160,6 +177,9 @@ class S3Instructions(JObjectWrapper):
                 before giving up and timing out. Can be expressed as an integer in nanoseconds, a time interval string,
                 e.g. "PT00:00:00.001" or "PT1s", or other time duration types. Default to 2 seconds.
             read_timeout (DurationLike): the amount of time to wait when reading a fragment before giving up and timing
+                out. Can be expressed as an integer in nanoseconds, a time interval string, e.g. "PT00:00:00.001" or
+                "PT1s", or other time duration types. Default to 2 seconds.
+            write_timeout (DurationLike): the amount of time to wait when writing a fragment before giving up and timing
                 out. Can be expressed as an integer in nanoseconds, a time interval string, e.g. "PT00:00:00.001" or
                 "PT1s", or other time duration types. Default to 2 seconds.
             access_key_id (str):  (Deprecated) the access key for reading files. Both access key and secret access key
@@ -238,6 +258,9 @@ class S3Instructions(JObjectWrapper):
 
             if read_timeout is not None:
                 builder.readTimeout(to_j_duration(read_timeout))
+
+            if write_timeout is not None:
+                builder.writeTimeout(to_j_duration(write_timeout))
 
             if ((access_key_id is not None and secret_access_key is None) or
                     (access_key_id is None and secret_access_key is not None)):

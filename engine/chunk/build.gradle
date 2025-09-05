@@ -1,6 +1,7 @@
 plugins {
     id 'java-library'
     id 'io.deephaven.project.register'
+    id 'io.deephaven.java-gwt-dependency'
 }
 
 description 'Engine Chunks: Array-like data structures for dense, efficient data movement'
@@ -9,11 +10,12 @@ dependencies {
     api project(':Util')
     api project(':codec-api:')
     implementation project(':Base')
+    implementation project(':Configuration')
 
     testImplementation libs.junit4
 
     testRuntimeOnly project(':log-to-slf4j')
-    testRuntimeOnly project(path: ':configs')
-    testRuntimeOnly project(path: ':test-configs')
+    testRuntimeOnly project(':configs')
+    testRuntimeOnly project(':test-configs')
     testRuntimeOnly libs.slf4j.simple
 }

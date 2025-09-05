@@ -149,7 +149,7 @@ public class TreeTableImpl extends HierarchicalTableImpl<TreeTable, TreeTableImp
     }
 
     @Override
-    public TreeTable withFilter(@NotNull Filter filter) {
+    public TreeTable withFilter(@NotNull final Filter filter) {
         final WhereFilter[] whereFilters = WhereFilter.fromInternal(filter);
         if (whereFilters.length == 0) {
             return noopResult();
@@ -222,16 +222,56 @@ public class TreeTableImpl extends HierarchicalTableImpl<TreeTable, TreeTableImp
                 parentIdentifierColumn, nodeFilterColumns, nodeOperations, availableColumnDefinitions);
     }
 
+    @Override
+    public TreeTable rebase(@NotNull final Table newSource) {
+        checkRebaseDefinition("TreeTable", source, newSource);
+
+        final QueryTable newSourceQueryTable = (QueryTable) newSource.coalesce();
+
+        return makeTreeInternal(newSourceQueryTable, identifierColumn, parentIdentifierColumn, getAttributes(),
+                nodeFilterColumns, nodeOperations, availableColumnDefinitions);
+    }
+
     public static TreeTable makeTree(
             @NotNull final QueryTable source,
             @NotNull final ColumnName identifierColumn,
             @NotNull final ColumnName parentIdentifierColumn) {
+        return makeTreeInternal(source, identifierColumn, parentIdentifierColumn,
+                source.getAttributes(ak -> shouldCopyAttribute(ak, BaseTable.CopyAttributeOperation.Tree)), Set.of(),
+                null, null);
+    }
+
+    private static @NotNull TreeTableImpl makeTreeInternal(
+            @NotNull final QueryTable source,
+            @NotNull final ColumnName identifierColumn,
+            @NotNull final ColumnName parentIdentifierColumn,
+            @NotNull final Map<String, Object> attributes,
+            final Set<ColumnName> nodeFilterColumns,
+            @Nullable final TreeNodeOperationsRecorder nodeOperations,
+            @Nullable final List<ColumnDefinition<?>> availableColumnDefinitions) {
+        final ColumnDefinition<?> idDef = source.getDefinition().getColumn(identifierColumn.name());
+        if (idDef == null) {
+            throw new NoSuchColumnException("tree identifier column: ", source.getDefinition().getColumnNames(),
+                    identifierColumn.name());
+        }
+        final ColumnDefinition<?> parentDef = source.getDefinition().getColumn(parentIdentifierColumn.name());
+        if (parentDef == null) {
+            throw new NoSuchColumnException("tree parent column: ", source.getDefinition().getColumnNames(),
+                    parentIdentifierColumn.name());
+        }
+        if (!idDef.hasCompatibleDataType(parentDef)) {
+            throw new InvalidColumnException(
+                    "tree parent and identifier columns must have the same data type, but parent is "
+                            + parentDef.describeForCompatibility() + " and identifier is "
+                            + idDef.describeForCompatibility());
+        }
         final QueryTable tree = computeTree(source, parentIdentifierColumn);
         final QueryTable sourceRowLookupTable = computeSourceRowLookupTable(source, identifierColumn);
         final TreeSourceRowLookup sourceRowLookup = new TreeSourceRowLookup(source, sourceRowLookupTable);
         final TreeTableImpl result = new TreeTableImpl(
-                source.getAttributes(ak -> shouldCopyAttribute(ak, BaseTable.CopyAttributeOperation.Tree)),
-                source, tree, sourceRowLookup, identifierColumn, parentIdentifierColumn, Set.of(), null, null);
+                attributes,
+                source, tree, sourceRowLookup, identifierColumn, parentIdentifierColumn, nodeFilterColumns,
+                nodeOperations, availableColumnDefinitions);
         source.copySortableColumns(result, (final String columnName) -> true);
         return result;
     }
@@ -298,13 +338,11 @@ public class TreeTableImpl extends HierarchicalTableImpl<TreeTable, TreeTableImp
         if (sourceRowKey == sourceRowLookup.noEntryValue()) {
             return NULL_ROW_KEY;
         }
-        if (filtered) {
-            final long sourceRowPosition = usePrev
-                    ? getSource().getRowSet().findPrev(sourceRowKey)
-                    : getSource().getRowSet().find(sourceRowKey);
-            if (sourceRowPosition == NULL_ROW_KEY) {
-                return NULL_ROW_KEY;
-            }
+        final long sourceRowPosition = usePrev
+                ? getSource().getRowSet().findPrev(sourceRowKey)
+                : getSource().getRowSet().find(sourceRowKey);
+        if (sourceRowPosition == NULL_ROW_KEY) {
+            return NULL_ROW_KEY;
         }
         return sourceRowKey;
     }
@@ -337,7 +375,7 @@ public class TreeTableImpl extends HierarchicalTableImpl<TreeTable, TreeTableImp
     }
 
     @Override
-    boolean hasNodeFiltersToApply(long nodeId) {
+    boolean hasNodeFiltersToApply(final long nodeId) {
         return nodeOperations != null && !nodeOperations.getRecordedFilters().isEmpty();
     }
 

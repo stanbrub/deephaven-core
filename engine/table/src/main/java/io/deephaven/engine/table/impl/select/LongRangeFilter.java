@@ -51,6 +51,14 @@ public class LongRangeFilter extends AbstractRangeFilter {
         }
     }
 
+    public final long getUpper() {
+        return upper;
+    }
+
+    public final long getLower() {
+        return lower;
+    }
+
     static WhereFilter makeLongRangeFilter(String columnName, Condition condition, long value) {
         switch (condition) {
             case LESS_THAN:

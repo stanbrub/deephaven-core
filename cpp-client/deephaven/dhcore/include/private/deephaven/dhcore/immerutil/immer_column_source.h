@@ -2,11 +2,15 @@
  * Copyright (c) 2016-2025 Deephaven Data Labs and Patent Pending
  */
 #pragma once
+
+#include <memory>
+#include <utility>
 #include <immer/algorithm.hpp>
 #include <immer/flex_vector.hpp>
 #include "deephaven/dhcore/chunk/chunk.h"
 #include "deephaven/dhcore/chunk/chunk_traits.h"
 #include "deephaven/dhcore/column/column_source.h"
+#include "deephaven/dhcore/container/row_sequence.h"
 #include "deephaven/dhcore/types.h"
 #include "deephaven/dhcore/utility/utility.h"
 
@@ -35,7 +39,7 @@ struct ImmerColumnSourceImpls {
     using deephaven::dhcore::chunk::TypeToChunk;
     using deephaven::dhcore::utility::TrueOrThrow;
     using deephaven::dhcore::utility::VerboseCast;
-    typedef typename TypeToChunk<T>::type_t chunkType_t;
+    using chunkType_t = typename TypeToChunk<T>::type_t;
     auto *typed_dest = VerboseCast<chunkType_t *>(DEEPHAVEN_LOCATION_EXPR(dest_data));
 
     constexpr bool kTypeIsNumeric = deephaven::dhcore::DeephavenTraits<T>::kIsNumeric;
@@ -162,11 +166,25 @@ struct ImmerColumnSourceImpls {
 }  // namespace internal
 
 class ImmerColumnSource : public virtual deephaven::dhcore::column::ColumnSource {
+public:
+  explicit ImmerColumnSource(const ElementType &element_type) : element_type_(element_type) {}
+
+  const ElementType &GetElementType() const final {
+    return element_type_;
+  }
+
+protected:
+  ElementType element_type_;
 };
 
+#ifdef _WIN32
+// Avoid Visual Studio warning about "inherits via dominance" for diamond inheritance pattern.
+#pragma warning(push)
+#pragma warning(disable: 4250)
+#endif
 template<typename T>
 class NumericImmerColumnSource final : public ImmerColumnSource,
-    public deephaven::dhcore::column::NumericColumnSource<T>,
+    public deephaven::dhcore::column::GenericColumnSource<T>,
     std::enable_shared_from_this<NumericImmerColumnSource<T>> {
   struct Private {};
 
@@ -176,11 +194,13 @@ class NumericImmerColumnSource final : public ImmerColumnSource,
   using RowSequence = deephaven::dhcore::container::RowSequence;
 
 public:
-  static std::shared_ptr<NumericImmerColumnSource> Create(immer::flex_vector<T> data) {
-    return std::make_shared<NumericImmerColumnSource>(Private(), std::move(data));
+  static std::shared_ptr<NumericImmerColumnSource> Create(const ElementType &element_type,
+      immer::flex_vector<T> data) {
+    return std::make_shared<NumericImmerColumnSource>(Private(), element_type, std::move(data));
   }
 
-  explicit NumericImmerColumnSource(Private, immer::flex_vector<T> data) : data_(std::move(data)) {}
+  explicit NumericImmerColumnSource(Private, const ElementType &element_type,
+      immer::flex_vector<T> data) : ImmerColumnSource(element_type), data_(std::move(data)) {}
 
   ~NumericImmerColumnSource() final = default;
 
@@ -202,21 +222,32 @@ public:
 private:
   immer::flex_vector<T> data_;
 };
+#ifdef _WIN32
+#pragma warning(pop)
+#endif
 
+#ifdef _WIN32
+// Avoid Visual Studio warning about "inherits via dominance" for diamond inheritance pattern.
+#pragma warning(push)
+#pragma warning(disable: 4250)
+#endif
 template<typename T>
 class GenericImmerColumnSource final : public ImmerColumnSource,
     public deephaven::dhcore::column::GenericColumnSource<T>,
     std::enable_shared_from_this<GenericImmerColumnSource<T>> {
   struct Private {};
   using ColumnSourceVisitor = deephaven::dhcore::column::ColumnSourceVisitor;
+
 public:
-  static std::shared_ptr<GenericImmerColumnSource> Create(immer::flex_vector<T> data,
-      immer::flex_vector<bool> null_flags) {
-    return std::make_shared<GenericImmerColumnSource>(Private(), std::move(data), std::move(null_flags));
+  static std::shared_ptr<GenericImmerColumnSource> Create(const ElementType &element_type,
+      immer::flex_vector<T> data, immer::flex_vector<bool> null_flags) {
+    return std::make_shared<GenericImmerColumnSource>(Private(), element_type, std::move(data),
+        std::move(null_flags));
   }
 
-  GenericImmerColumnSource(Private, immer::flex_vector<T> &&data, immer::flex_vector<bool> &&null_flags) :
-      data_(std::move(data)), null_flags_(std::move(null_flags)) {}
+  GenericImmerColumnSource(Private, const ElementType &element_type,
+      immer::flex_vector<T> &&data, immer::flex_vector<bool> &&null_flags) :
+      ImmerColumnSource(element_type), data_(std::move(data)), null_flags_(std::move(null_flags)) {}
   ~GenericImmerColumnSource() final = default;
 
   void FillChunk(const RowSequence &rows, Chunk *dest, BooleanChunk *optional_dest_null_flags) const final {
@@ -238,4 +269,7 @@ private:
   immer::flex_vector<T> data_;
   immer::flex_vector<bool> null_flags_;
 };
+#ifdef _WIN32
+#pragma warning(pop)
+#endif
 }  // namespace deephaven::dhcore::immerutil

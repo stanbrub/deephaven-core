@@ -252,8 +252,7 @@ public class RedirectedColumnSource<T> extends AbstractColumnSource<T>
 
     @Override
     public boolean isUngroupable() {
-        return innerSource instanceof UngroupableColumnSource
-                && ((UngroupableColumnSource) innerSource).isUngroupable();
+        return UngroupableColumnSource.isUngroupable(innerSource);
     }
 
     @Override
@@ -523,7 +522,7 @@ public class RedirectedColumnSource<T> extends AbstractColumnSource<T>
 
         if (ascendingMapping) {
             effectiveContext.doOrderedFillAscending(innerSource, usePrev, destination);
-        } else if (innerSource instanceof FillUnordered) {
+        } else if (FillUnordered.providesFillUnordered(innerSource)) {
             // noinspection unchecked
             effectiveContext.doUnorderedFill((FillUnordered<Values>) innerSource, usePrev, destination);
         } else {

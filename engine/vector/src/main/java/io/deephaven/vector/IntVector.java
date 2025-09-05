@@ -9,10 +9,12 @@ package io.deephaven.vector;
 
 import io.deephaven.base.verify.Require;
 import io.deephaven.engine.primitive.iterator.CloseablePrimitiveIteratorOfInt;
+import io.deephaven.engine.primitive.value.iterator.ValueIteratorOfInt;
 import io.deephaven.qst.type.IntType;
 import io.deephaven.qst.type.PrimitiveVectorType;
 import io.deephaven.util.QueryConstants;
 import io.deephaven.util.annotations.FinalDefault;
+import io.deephaven.util.compare.IntComparisons;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -55,7 +57,7 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
 
     @Override
     @FinalDefault
-    default CloseablePrimitiveIteratorOfInt iterator() {
+    default ValueIteratorOfInt iterator() {
         return iterator(0, size());
     }
 
@@ -67,9 +69,9 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
      * @param toIndexExclusive The first position after {@code fromIndexInclusive} to not include
      * @return An iterator over the requested slice
      */
-    default CloseablePrimitiveIteratorOfInt iterator(final long fromIndexInclusive, final long toIndexExclusive) {
+    default ValueIteratorOfInt iterator(final long fromIndexInclusive, final long toIndexExclusive) {
         Require.leq(fromIndexInclusive, "fromIndexInclusive", toIndexExclusive, "toIndexExclusive");
-        return new CloseablePrimitiveIteratorOfInt() {
+        return new ValueIteratorOfInt() {
 
             long nextIndex = fromIndexInclusive;
 
@@ -81,6 +83,11 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
             @Override
             public boolean hasNext() {
                 return nextIndex < toIndexExclusive;
+            }
+
+            @Override
+            public long remaining() {
+                return toIndexExclusive - nextIndex;
             }
         };
     }
@@ -95,6 +102,22 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
     @FinalDefault
     default String toString(final int prefixLength) {
         return toString(this, prefixLength);
+    }
+
+    /**
+     * <p>
+     * Compare this vector with another vector.
+     * </p>
+     *
+     * <p>
+     * The vectors are ordered lexicographically using Deephaven sorting rules.
+     * </p>
+     *
+     * {@see Comparable#compareTo}
+     */
+    @Override
+    default int compareTo(final IntVector o) {
+        return compareTo(this, o);
     }
 
     static String intValToString(final Object val) {
@@ -167,6 +190,37 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
     }
 
     /**
+     * Helper method for {@link Comparable#compareTo(Object)} for a generic IntVector.
+     * 
+     * @param aVector the first vector (this in compareTo)
+     * @param bVector the second vector ("o" or other in compareTo)
+     * @return -1, 0, or 1 if aVector is less than, equal to, or greater than bVector (respectively)
+     */
+    static int compareTo(final IntVector aVector, final IntVector bVector) {
+        if (aVector == bVector) {
+            return 0;
+        }
+        try (final CloseablePrimitiveIteratorOfInt aIterator = aVector.iterator();
+                final CloseablePrimitiveIteratorOfInt bIterator = bVector.iterator()) {
+            while (aIterator.hasNext()) {
+                if (!bIterator.hasNext()) {
+                    return 1;
+                }
+                final int aValue = aIterator.nextInt();
+                final int bValue = bIterator.nextInt();
+                final int compare = IntComparisons.compare(aValue, bValue);
+                if (compare != 0) {
+                    return compare;
+                }
+            }
+            if (bIterator.hasNext()) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Helper method for implementing {@link Object#hashCode()}. Follows the pattern in {@link Arrays#hashCode(int[])}.
      *
      * @param vector The IntVector to hash
@@ -179,7 +233,9 @@ public interface IntVector extends Vector<IntVector>, Iterable<Integer> {
         }
         try (final CloseablePrimitiveIteratorOfInt iterator = vector.iterator()) {
             while (iterator.hasNext()) {
+                // region ElementHash
                 result = 31 * result + Integer.hashCode(iterator.nextInt());
+                // endregion ElementHash
             }
         }
         return result;

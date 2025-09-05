@@ -1,11 +1,12 @@
 /*
- * Copyright (c) 2016-2024 Deephaven Data Labs and Patent Pending
+ * Copyright (c) 2016-2025 Deephaven Data Labs and Patent Pending
  */
 #include <iostream>
 #include "deephaven/third_party/catch.hpp"
 #include "deephaven/tests/test_util.h"
+#include "deephaven/client/client.h"
 #include "deephaven/client/utility/internal_types.h"
-#include "deephaven/client/utility/misc_types.h"
+#include "deephaven/client/utility/table_maker.h"
 #include "deephaven/dhcore/container/row_sequence.h"
 #include "deephaven/dhcore/types.h"
 
@@ -72,7 +73,7 @@ TEST_CASE("Uploaded Arrow Timestamp units get normalized to nanos at FillChunk t
   }
 }
 
-TEST_CASE("Uploaded Arrow Time64 units get normalized to nanos at FillChunk time", "[timeunit][.hidden]") {
+TEST_CASE("Uploaded Arrow Time64 units get normalized to nanos at FillChunk time", "[timeunit]") {
   auto tm = TableMakerForTests::Create();
 
   std::vector<std::optional<InternalLocalTime<arrow::TimeUnit::MICRO>>> lt_micro;

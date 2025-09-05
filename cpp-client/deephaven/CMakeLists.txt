@@ -8,7 +8,7 @@ endif()
 
 project(deephaven)
 
-set(deephaven_VERSION 0.38.0)
+set(deephaven_VERSION 0.40.0)
 set(CMAKE_CXX_STANDARD 17)
 set(GCC_COVERAGE_COMPILE_FLAGS "-g -O0 -coverage -fprofile-arcs -ftest-coverage")
 set(GCC_COVERAGE_LINK_FLAGS "-coverage -lgcov")

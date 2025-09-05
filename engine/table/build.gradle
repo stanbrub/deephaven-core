@@ -1,7 +1,7 @@
 plugins {
     id 'java-library'
     id 'io.deephaven.project.register'
-    id 'me.champeau.jmh' version '0.7.2'
+    id 'me.champeau.jmh' version '0.7.3'
 }
 
 description 'Engine Table: Implementation and closely-coupled utilities'
@@ -22,6 +22,9 @@ dependencies {
     api project(':hotspot')
     api project(':IO')
     api project(':codec-api')
+
+    compileOnly project(':util-immutables')
+    annotationProcessor libs.immutables.value
 
     implementation project(':util-processenvironment')
     implementation project(':util-thread')
@@ -91,8 +94,7 @@ dependencies {
 spotless {
     java {
         // Exclude these codegen sample files from here so we don't even need a comment to disable formatting
-        targetExclude 'src/test/java/io/deephaven/engine/table/impl/select/FilterKernel*Sample.java',
-                'src/test/java/io/deephaven/engine/table/impl/select/Formula*Sample.java'
+        targetExclude 'src/test/java/io/deephaven/engine/table/impl/select/sample*/**/*.java'
     }
 }
 

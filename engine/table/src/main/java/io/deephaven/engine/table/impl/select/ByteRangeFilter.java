@@ -51,6 +51,14 @@ public class ByteRangeFilter extends AbstractRangeFilter {
         }
     }
 
+    public final byte getUpper() {
+        return upper;
+    }
+
+    public final byte getLower() {
+        return lower;
+    }
+
     static WhereFilter makeByteRangeFilter(String columnName, Condition condition, byte value) {
         switch (condition) {
             case LESS_THAN:

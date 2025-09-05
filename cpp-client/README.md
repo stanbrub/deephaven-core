@@ -1,15 +1,14 @@
-# Building the C++ client on Ubuntu 20.04 / 22.04 and Windows 10 / 11.
+# Building the C++ client on Ubuntu 20.04 / 22.04
 
 These instructions show how to install and run the Deephaven C++ client, its
-dependencies, its unit tests on Linux and Windows. We have tested these instructions in Ubuntu 22.04 with the default
-C++ compiler and tool suite (cmake etc). We have also tested these instructions
-on Windows 10 and 11 with Visual Studio Community Edition.
+dependencies, its unit tests on Linux. If you are looking for Windows instructions,
+see the file README-windows.md.
+
+We have tested these instructions in Ubuntu 22.04 with the default
+C++ compiler and tool suite (cmake etc).
 We have used the instructions in the past to build
 for older Ubuntu versions (20.04) and for some Fedora versions, but we don't regularly test
 on them anymore so we do not guarantee they are current for those platforms.
-
-Instructions for Linux are below. Instructions for Windows are in the section
-that follows.
 
 # Before you build the client
 
@@ -52,13 +51,20 @@ connect a server when you want to run them.
    git clone https://github.com/deephaven/deephaven-core.git
    ```
 
-5. Build and install dependencies for Deephaven C++ client.
+5. Build and install dependencies for the Deephaven C++ client.
 
-   The `build-dependencies.sh` script in this directory downloads,
-   builds and installs the dependent libraries
-   (Protobuf, re2, gflags, absl, flatbuffers, c-ares, zlib, gRPC, and Arrow).
+   Inside the $DHSRC/deephaven-core/cpp-client directory there is a script called
+   `build-dependencies.sh`. This script downloads, builds, and installs the dependent
+   libraries (Protobuf, re2, gflags, absl, flatbuffers, c-ares, zlib, gRPC, and Arrow).
    Decide on a directory for the dependencies to live (eg, "$HOME/dhcpp").
-   Create that directory and copy the script there.
+   Create that directory and copy the script there. If the directory already exists
+   from a previous attempt, you should ensure is clean/empty.
+
+   ```
+   export DHCPP=$HOME/dhcpp
+   mkdir -p $DHCPP
+   cp $DHSRC/deephaven-core/cpp-client/build-dependencies.sh $DHCPP
+   ```
 
    The three main build types of a standard cmake build are supported,
    `Release`, `Debug` and `RelWithDebInfo`.  By default. `build-dependencies.sh`
@@ -66,25 +72,17 @@ connect a server when you want to run them.
    environment variable `BUILD_TYPE=Release` (1)
 
    Edit your local copy of the script if necessary to reflect your selection
-   of build tools and build target;
-   defaults point to Ubuntu system's g++, cmake, and a `RelWithDebInfo` build target
-   for cmake.
+   of build tools and build target; Defaults point to Ubuntu system's g++,
+   cmake, and a `RelWithDebInfo` build target for cmake.
    Comments in the script will help you identifying customization points.
    Note however that defaults are tested, variations are not;
    any deviation from defaults may require manual modification of other files later,
    when building the C++ client proper.
 
-   Example:
+   Next, run the script:
+
    ```
-   # This should reflect your selection for where dependencies will live
-   export DHCPP=$HOME/dhcpp
-   # If the directory already exists from a previous attempt, ensure is clean/empty
-   mkdir -p $DHCPP
-   cp $DHSRC/build-dependencies.sh $DHCPP
    cd $DHCPP
-   # Maybe edit build-dependencies.sh to reflect choices of build tools and build target, if you
-   # want anything different than defaults; defaults are tested to work,
-   # any deviation from defaults may require changing other files later.
    # Below we save the output of the script to keep a record of the commands ran during the build.
    ./build-dependencies.sh 2>&1 | tee build-dependencies.log
    ```
@@ -215,93 +213,3 @@ Notes
       run the `build-cpp-protos.sh` script.
       This should generate up-to-date versions of the C++ stubs
       according to the proto sources on the same clone.
-
-# Building the C++ client on Windows 10 / Windows 11
-
-1. Install Visual Studio 2022 Community Edition (or Professional, or Enterprise)
-   from here:
-
-   https://visualstudio.microsoft.com/downloads/
-
-   When the installer runs, select the workload "Desktop development with C++"
-
-2. Use your preferred version of git, or install Git from here:
-
-   https://git-scm.com/download/win
-
-3. We will do the actual build process inside a Visual Studio developer
-   command prompt. Run the developer command prompt by navigating here:
-
-   Start -> V -> Visual Studio 2022 -> Developer Command Prompt for VS 2022
-
-4. Make a 'dhsrc' directory that will hold the two repositories: the vcpkg
-   package manager and Deephaven Core. Then make a 'dhinstall' directory that
-   will hold the libraries and executables that are the result of this
-   build process.  You can decide on the locations you want for those directories,
-   the code below creates them under the home directory of the Windows user
-   running the command prompt; change the definitions of the environment variables
-   DHSRC and DHINSTALL if you decide to place them somewhere else.
-   
-   ```
-   set DHSRC=%HOMEDRIVE%%HOMEPATH%\dhsrc
-   set DHINSTALL=%HOMEDRIVE%%HOMEPATH%\dhinstall
-   mkdir %DHSRC%
-   mkdir %DHINSTALL%
-   ```
-
-5. Use git to clone the two repositories mentioned above.
-   If you are using Git for Windows, you can run the "Git Bash Shell"
-   and type these commands into it:
-   ```
-   cd $HOME/dhsrc  # change if dhsrc on a different location
-   git clone https://github.com/microsoft/vcpkg.git
-   git clone https://github.com/deephaven/deephaven-core.git
-   ```
-
-6. Come back to the Visual Studio developer command prompt and do the
-   one-time installation steps for vcpkg.
-   ```
-   cd /d %DHSRC%\vcpkg
-   .\bootstrap-vcpkg.bat
-   ```
-
-7. Set VCPKG_ROOT. Note that steps 8 and 9 both rely on it being set correctly.
-   If you come back to these instructions at a future date, make sure that VCPKG_ROOT
-   is set before re-running those steps.
-   ```
-   set VCPKG_ROOT=%DHSRC%\vcpkg
-   ```
-
-8. Change to the Deephaven core directory and build/install the dependent
-   packages. On my computer this process took about 20 minutes.
-   ```
-   cd /d %DHSRC%\deephaven-core\cpp-client\deephaven
-   %VCPKG_ROOT%\vcpkg.exe install --triplet x64-windows
-    ```
-
-9. Now configure the build for Deephaven Core:
-   ``` 
-   cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake -DCMAKE_INSTALL_PREFIX=%DHINSTALL% -DX_VCPKG_APPLOCAL_DEPS_INSTALL=ON
-   ```
-   
-10. Finally, build and install Deephaven Core. Note that the build type (RelWithDebInfo) is specified differently for the Windows build
-    than it is for the Ubuntu build. For Windows, we specify the configuration type directly in the build step using the --config flag.
-   ```
-   # Replace '16' by the number of CPU threads you want to use for building
-   cmake --build build --config RelWithDebInfo --target install -- /p:CL_MPCount=16 -m:1
-   ```
-
-11. Run the tests.
-    First, make sure Deephaven is running. If your Deephaven instance
-    is running somewhere other than the default location of localhost:10000,
-    then set these environment variables appropriately:
-    ```
-    set DH_HOST=...
-    set DH_PORT=...
-    ```
-
-    then run the tests executable:
-    ```
-    cd /d %DHINSTALL%\bin
-    .\dhclient_tests.exe
-    ```

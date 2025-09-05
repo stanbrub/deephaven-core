@@ -26,6 +26,7 @@ import io.deephaven.engine.updategraph.NotificationQueue;
 import io.deephaven.time.DateTimeUtils;
 import io.deephaven.util.QueryConstants;
 import io.deephaven.util.SafeCloseable;
+import io.deephaven.util.annotations.InternalUseOnly;
 import io.deephaven.util.datastructures.CachingSupplier;
 import io.deephaven.util.type.ArrayTypeUtils;
 import io.deephaven.util.type.TypeUtils;
@@ -141,7 +142,9 @@ public class MatchFilter extends WhereFilterImpl implements DependencyStreamProv
         this.values = values;
     }
 
-    private ConditionFilter getFailoverFilterIfCached() {
+    @InternalUseOnly
+    @Nullable
+    public ConditionFilter getFailoverFilterIfCached() {
         return failoverFilter != null ? failoverFilter.getIfCached() : null;
     }
 
@@ -170,6 +173,14 @@ public class MatchFilter extends WhereFilterImpl implements DependencyStreamProv
 
     public MatchType getMatchType() {
         return invertMatch ? MatchType.Inverted : MatchType.Regular;
+    }
+
+    public Class<?> getColumnType() {
+        return columnType;
+    }
+
+    public boolean isCaseInsensitive() {
+        return caseInsensitive;
     }
 
     @Override
@@ -222,11 +233,11 @@ public class MatchFilter extends WhereFilterImpl implements DependencyStreamProv
                             + "\" doesn't exist in this table, available columns: " + tableDefinition.getColumnNames());
                 }
             }
+            columnType = column.getDataType();
             if (strValues == null) {
                 initialized = true;
                 return;
             }
-            columnType = column.getDataType();
             final List<Object> valueList = new ArrayList<>();
             final Map<String, Object> queryScopeVariables =
                     compilationProcessor.getFormulaImports().getQueryScopeVariables();
@@ -935,6 +946,7 @@ public class MatchFilter extends WhereFilterImpl implements DependencyStreamProv
         if (initialized) {
             copy.initialized = true;
             copy.values = values;
+            copy.columnType = columnType;
         }
         return copy;
     }

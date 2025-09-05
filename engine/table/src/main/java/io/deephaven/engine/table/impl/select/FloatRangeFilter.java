@@ -50,6 +50,14 @@ public class FloatRangeFilter extends AbstractRangeFilter {
         }
     }
 
+    public final float getUpper() {
+        return upper;
+    }
+
+    public final float getLower() {
+        return lower;
+    }
+
     public static WhereFilter makeRange(String columnName, String val) {
         final int precision = findPrecision(val);
         final double parsed = Double.parseDouble(val);

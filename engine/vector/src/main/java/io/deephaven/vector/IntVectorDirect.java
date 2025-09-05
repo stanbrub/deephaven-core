@@ -8,7 +8,7 @@
 package io.deephaven.vector;
 
 import io.deephaven.base.verify.Require;
-import io.deephaven.engine.primitive.iterator.CloseablePrimitiveIteratorOfInt;
+import io.deephaven.engine.primitive.value.iterator.ValueIteratorOfInt;
 import io.deephaven.util.annotations.ArrayType;
 import io.deephaven.util.annotations.ArrayTypeGetter;
 import org.jetbrains.annotations.NotNull;
@@ -62,9 +62,9 @@ public final class IntVectorDirect implements IntVector {
     }
 
     @Override
-    public CloseablePrimitiveIteratorOfInt iterator(final long fromIndexInclusive, final long toIndexExclusive) {
+    public ValueIteratorOfInt iterator(final long fromIndexInclusive, final long toIndexExclusive) {
         if (fromIndexInclusive == 0 && toIndexExclusive == data.length) {
-            return CloseablePrimitiveIteratorOfInt.of(data);
+            return ValueIteratorOfInt.of(data);
         }
         return IntVector.super.iterator(fromIndexInclusive, toIndexExclusive);
     }
@@ -91,6 +91,23 @@ public final class IntVectorDirect implements IntVector {
         }
         return IntVector.equals(this, obj);
     }
+
+    // region compareTo
+    @Override
+    public int compareTo(final IntVector o) {
+        if (o instanceof IntVectorDirect) {
+            // The byte, short, integer, and long versions can use direct vector comparisons as our order matches the
+            // natural order of numbers.
+            //
+            // Float and double can not use direct vector comparisons. Although NaN works because Float.compare and
+            // Double.compare sort NaNs last, as we do for Deephaven values; and the Arrays.compare is defined to work
+            // as Float.compare. However, Float.compare(0f,-0) does not produce 0 but rather ranks -0 as less than 0.
+            return Arrays.compare(data, ((IntVectorDirect) o).data);
+        }
+        return IntVector.super.compareTo(o);
+    }
+
+    // endregion compareTo
 
     @Override
     public int hashCode() {

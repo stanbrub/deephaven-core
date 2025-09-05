@@ -10,15 +10,19 @@ import io.deephaven.api.expression.Function;
 import io.deephaven.api.expression.Method;
 import io.deephaven.api.filter.Filter;
 import io.deephaven.api.filter.FilterAnd;
+import io.deephaven.api.filter.FilterBarrier;
 import io.deephaven.api.filter.FilterComparison;
 import io.deephaven.api.filter.FilterIn;
 import io.deephaven.api.filter.FilterIsNull;
 import io.deephaven.api.filter.FilterNot;
 import io.deephaven.api.filter.FilterOr;
 import io.deephaven.api.filter.FilterPattern;
+import io.deephaven.api.filter.FilterRespectsBarrier;
+import io.deephaven.api.filter.FilterSerial;
 import io.deephaven.api.literal.Literal;
 import org.apache.commons.text.StringEscapeUtils;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
@@ -235,6 +239,37 @@ public class Strings {
                 + method.arguments().stream().map(Strings::of).collect(Collectors.joining(", ", "(", ")"));
     }
 
+    public static String of(FilterSerial serial) {
+        return of(serial, false);
+    }
+
+    public static String of(FilterSerial serial, boolean invert) {
+        // we don't have a way to represent serial in the query language; so this can't round trip
+        return "invokeSerially(" + of(serial.filter(), invert) + ")";
+    }
+
+    public static String of(FilterBarrier barrier) {
+        return of(barrier, false);
+    }
+
+    public static String of(FilterBarrier barrier, boolean invert) {
+        // we don't have a way to represent barrier in the query language; so this can't round trip
+        final String barrierId = Arrays.toString(barrier.barriers());
+        return "withBarrier(" + barrierId + ", " + of(barrier.filter(), invert) + ")";
+    }
+
+    public static String of(FilterRespectsBarrier respectsBarrier) {
+        return of(respectsBarrier, false);
+    }
+
+    public static String of(FilterRespectsBarrier respectsBarrier, boolean invert) {
+        // we don't have a way to represent respects barrier in the query language; so this can't round trip
+        final String barrierText = Arrays.stream(respectsBarrier.respectedBarriers())
+                .map(Object::toString)
+                .collect(Collectors.joining(",", "[", "]"));
+        return "respectsBarrier(" + barrierText + ", " + of(respectsBarrier.filter(), invert) + ")";
+    }
+
     public static String of(boolean literal) {
         return Boolean.toString(literal);
     }
@@ -371,6 +406,21 @@ public class Strings {
         @Override
         public String visit(FilterPattern pattern) {
             return of(pattern, invert);
+        }
+
+        @Override
+        public String visit(FilterSerial serial) {
+            return of(serial, invert);
+        }
+
+        @Override
+        public String visit(FilterBarrier barrier) {
+            return of(barrier, invert);
+        }
+
+        @Override
+        public String visit(FilterRespectsBarrier respectsBarrier) {
+            return of(respectsBarrier, invert);
         }
 
         @Override

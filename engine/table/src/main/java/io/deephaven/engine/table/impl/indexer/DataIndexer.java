@@ -253,7 +253,7 @@ public class DataIndexer implements TrackingRowSet.Indexer {
                 .filter(Objects::nonNull)
                 .max(Comparator.comparingLong(dataIndex -> dataIndex.table().size()))
                 .orElse(null),
-                table::isRefreshing, (final DataIndex result) -> result != null && result.isRefreshing());
+                table.isRefreshing(), (final DataIndex result) -> result != null && result.isRefreshing());
     }
 
     /**
@@ -304,7 +304,7 @@ public class DataIndexer implements TrackingRowSet.Indexer {
         }
         if (!rootCache.add(pathFor(dataIndex.keyColumnNamesByIndexedColumn().keySet()), dataIndex)) {
             throw new IllegalStateException(String.format("Attempted to add a duplicate index %s for key columns %s",
-                    dataIndex, dataIndex.keyColumnNamesByIndexedColumn().keySet()));
+                    dataIndex, dataIndex.keyColumnNamesByIndexedColumn().values()));
         }
     }
 

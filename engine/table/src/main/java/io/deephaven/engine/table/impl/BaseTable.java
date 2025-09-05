@@ -16,6 +16,7 @@ import io.deephaven.configuration.Configuration;
 import io.deephaven.engine.context.ExecutionContext;
 import io.deephaven.engine.exceptions.TableAlreadyFailedException;
 import io.deephaven.engine.exceptions.UpdateGraphConflictException;
+import io.deephaven.engine.table.impl.perf.PerformanceEntry;
 import io.deephaven.engine.table.impl.util.StepUpdater;
 import io.deephaven.engine.updategraph.NotificationQueue;
 import io.deephaven.engine.updategraph.UpdateGraph;
@@ -54,13 +55,14 @@ import java.util.concurrent.locks.Condition;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 /**
  * Base abstract class all standard table implementations.
  */
 public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends BaseGridAttributes<Table, IMPL_TYPE>
-        implements TableDefaults, NotificationStepReceiver, NotificationStepSource {
+        implements TableDefaults, NotificationStepReceiver, NotificationStepSource, HasParentPerformanceIds {
 
     private static final long serialVersionUID = 1L;
 
@@ -100,7 +102,7 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
     /**
      * This table's description.
      */
-    protected final String description;
+    private final String description;
 
     /**
      * This table's update graph.
@@ -170,12 +172,12 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
 
     @Override
     public String toString() {
-        return description;
+        return getDescription();
     }
 
     @Override
     public LogOutput append(@NotNull final LogOutput logOutput) {
-        return logOutput.append(description);
+        return logOutput.append(getDescription());
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -360,6 +362,15 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
                 CopyAttributeOperation.Flatten, // add flatten for now because web flattens all views
                 CopyAttributeOperation.Preview));
 
+        tempMap.put(BARRAGE_SCHEMA_ATTRIBUTE, EnumSet.of(
+                CopyAttributeOperation.Filter,
+                CopyAttributeOperation.FirstBy,
+                CopyAttributeOperation.Flatten,
+                CopyAttributeOperation.LastBy,
+                CopyAttributeOperation.PartitionBy,
+                CopyAttributeOperation.Reverse,
+                CopyAttributeOperation.Sort));
+
         attributeToCopySet = Collections.unmodifiableMap(tempMap);
     }
 
@@ -441,6 +452,21 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
     @Override
     public Table removeBlink() {
         return withoutAttributes(Set.of(BLINK_TABLE_ATTRIBUTE));
+    }
+
+    @Override
+    public Table assertBlink() {
+        return withAttributes(Map.of(BLINK_TABLE_ATTRIBUTE, true));
+    }
+
+    @Override
+    public Table assertAddOnly() {
+        return withAttributes(Map.of(ADD_ONLY_TABLE_ATTRIBUTE, true));
+    }
+
+    @Override
+    public Table assertAppendOnly() {
+        return withAttributes(Map.of(APPEND_ONLY_TABLE_ATTRIBUTE, true));
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -562,7 +588,7 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
     @Override
     public void addUpdateListener(@NotNull final TableUpdateListener listener) {
         if (isFailed) {
-            throw new TableAlreadyFailedException("Can not listen to failed table " + description);
+            throw new TableAlreadyFailedException("Can not listen to failed table " + getDescription());
         }
         if (isRefreshing()) {
             // ensure that listener is in the same update graph if applicable
@@ -577,7 +603,7 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
     public boolean addUpdateListener(
             @NotNull final TableUpdateListener listener, final long requiredLastNotificationStep) {
         if (isFailed) {
-            throw new TableAlreadyFailedException("Can not listen to failed table " + description);
+            throw new TableAlreadyFailedException("Can not listen to failed table " + getDescription());
         }
 
         if (!isRefreshing()) {
@@ -675,57 +701,60 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
         // tables may only be updated once per cycle
         Assert.lt(lastNotificationStep, "lastNotificationStep", currentStep, "updateGraph.clock().currentStep()");
 
-        Assert.eqTrue(update.valid(), "update.valid()");
-        if (update.empty()) {
+        update.validate();
+
+        final TableUpdate updateToSend;
+        if (update.modified().isEmpty() && update.modifiedColumnSet().nonempty()
+                || (update.modifiedColumnSet().empty() && update.modified().isNonempty())) {
+            updateToSend = new TableUpdateImpl(update.added().copy(), update.removed().copy(),
+                    RowSetFactory.empty(), update.shifted(), ModifiedColumnSet.EMPTY);
             update.release();
+        } else {
+            updateToSend = update;
+        }
+
+        if (updateToSend.empty()) {
+            updateToSend.release();
             return;
         }
 
         maybeSignal();
 
-        final boolean hasNoListeners = !hasListeners();
-        if (hasNoListeners) {
-            lastNotificationStep = currentStep;
-            update.release();
-            return;
-        }
-
-        Assert.neqNull(update.added(), "added");
-        Assert.neqNull(update.removed(), "removed");
-        Assert.neqNull(update.modified(), "modified");
-        Assert.neqNull(update.shifted(), "shifted");
+        Assert.neqNull(updateToSend.added(), "added");
+        Assert.neqNull(updateToSend.removed(), "removed");
+        Assert.neqNull(updateToSend.modified(), "modified");
+        Assert.neqNull(updateToSend.shifted(), "shifted");
 
         if (isFlat()) {
             Assert.assertion(getRowSet().isFlat(), "getRowSet().isFlat()", getRowSet(), "getRowSet()");
         }
         if (isAppendOnly() || isAddOnly()) {
-            Assert.assertion(update.removed().isEmpty(), "update.removed.empty()");
-            Assert.assertion(update.modified().isEmpty(), "update.modified.empty()");
-            Assert.assertion(update.shifted().empty(), "update.shifted.empty()");
+            Assert.assertion(updateToSend.removed().isEmpty(), "updateToSend.removed.empty()");
+            Assert.assertion(updateToSend.modified().isEmpty(), "updateToSend.modified.empty()");
+            Assert.assertion(updateToSend.shifted().empty(), "updateToSend.shifted.empty()");
         }
         if (isAppendOnly()) {
-            Assert.assertion(getRowSet().sizePrev() == 0 || getRowSet().lastRowKeyPrev() < update.added().firstRowKey(),
-                    "getRowSet().lastRowKeyPrev() < update.added().firstRowKey()");
+            Assert.assertion(
+                    getRowSet().sizePrev() == 0 || getRowSet().lastRowKeyPrev() < updateToSend.added().firstRowKey(),
+                    "getRowSet().lastRowKeyPrev() < updateToSend.added().firstRowKey()");
         }
         if (isBlink()) {
-            Assert.eq(update.added().size(), "added size", getRowSet().size(), "current table size");
-            Assert.eq(update.removed().size(), "removed size", getRowSet().sizePrev(), "previous table size");
-            Assert.assertion(update.modified().isEmpty(), "update.modified.isEmpty()");
-            Assert.assertion(update.shifted().empty(), "update.shifted.empty()");
+            Assert.eq(updateToSend.added().size(), "added size", getRowSet().size(), "current table size");
+            Assert.eq(updateToSend.removed().size(), "removed size", getRowSet().sizePrev(), "previous table size");
+            Assert.assertion(updateToSend.modified().isEmpty(), "updateToSend.modified.isEmpty()");
+            Assert.assertion(updateToSend.shifted().empty(), "updateToSend.shifted.empty()");
         }
 
         // First validate that each rowSet is in a sane state.
         if (VALIDATE_UPDATE_INDICES) {
-            update.added().validate();
-            update.removed().validate();
-            update.modified().validate();
-            update.shifted().validate();
-            Assert.eq(update.modified().isEmpty(), "update.modified.empty()", update.modifiedColumnSet().empty(),
-                    "update.modifiedColumnSet.empty()");
+            updateToSend.added().validate();
+            updateToSend.removed().validate();
+            updateToSend.modified().validate();
+            updateToSend.shifted().validate();
         }
 
         if (VALIDATE_UPDATE_OVERLAPS) {
-            validateUpdateOverlaps(update);
+            validateUpdateOverlaps(updateToSend);
         }
 
         // notify children
@@ -734,26 +763,30 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
 
             final NotificationQueue notificationQueue = getNotificationQueue();
             childListenerReferences.forEach(
-                    (listenerRef, listener) -> notificationQueue.addNotification(listener.getNotification(update)));
+                    (listenerRef, listener) -> notificationQueue
+                            .addNotification(listener.getNotification(updateToSend)));
         }
 
-        update.release();
+        updateToSend.release();
     }
 
     private void validateUpdateOverlaps(final TableUpdate update) {
         final boolean currentMissingAdds = !update.added().subsetOf(getRowSet());
         final boolean currentMissingModifications = !update.modified().subsetOf(getRowSet());
-        final boolean previousMissingRemovals;
-        try (final RowSet prevIndex = getRowSet().copyPrev()) {
-            previousMissingRemovals = !update.removed().subsetOf(prevIndex);
-        }
+        final boolean previousMissingRemovals = !update.removed().subsetOf(getRowSet().prev());
         final boolean currentContainsRemovals;
-        try (final RowSet removedMinusAdded = update.removed().minus(update.added())) {
-            currentContainsRemovals = removedMinusAdded.overlaps(getRowSet());
+
+        if (!update.shifted().empty()) {
+            // we cannot perform a cheap rm/add overlapping check when shifts are present, so we'll skip it
+            currentContainsRemovals = false;
+        } else {
+            try (final RowSet removedMinusAdded = update.removed().minus(update.added())) {
+                currentContainsRemovals = removedMinusAdded.overlaps(getRowSet());
+            }
         }
 
         if (!previousMissingRemovals && !currentMissingAdds && !currentMissingModifications &&
-                (!currentContainsRemovals || !update.shifted().empty())) {
+                !currentContainsRemovals) {
             return;
         }
 
@@ -780,8 +813,8 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
                     }
                 };
 
-                append.accept("build().copyPrev=", getRowSet().copyPrev());
-                append.accept("build()=", getRowSet().copyPrev());
+                append.accept("build().prev=", getRowSet().prev());
+                append.accept("build()=", getRowSet());
                 append.accept("added=", update.added());
                 append.accept("removed=", update.removed());
                 append.accept("modified=", update.modified());
@@ -793,15 +826,15 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
         }
 
         // If we're still here, we know that things are off the rails, and we want to fire the assertion
-        final RowSet removalsMinusPrevious = update.removed().minus(getRowSet().copyPrev());
+        final RowSet removalsMinusPrevious = update.removed().minus(getRowSet().prev());
         final RowSet addedMinusCurrent = update.added().minus(getRowSet());
         final RowSet removedIntersectCurrent = update.removed().intersect(getRowSet());
         final RowSet modifiedMinusCurrent = update.modified().minus(getRowSet());
 
-        // Everything is messed up for this table, print out the indices in an easy to understand way
+        // Everything is messed up for this table, print out the indices in an easy-to-understand way
         final LogOutput logOutput = new LogOutputStringImpl()
                 .append("RowSet update error detected: ")
-                .append(LogOutput::nl).append("\t          previousIndex=").append(getRowSet().copyPrev())
+                .append(LogOutput::nl).append("\t          previousIndex=").append(getRowSet().prev())
                 .append(LogOutput::nl).append("\t           currentIndex=").append(getRowSet())
                 .append(LogOutput::nl).append("\t                  added=").append(update.added())
                 .append(LogOutput::nl).append("\t                removed=").append(update.removed())
@@ -945,7 +978,9 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
         private final boolean canReuseModifiedColumnSet;
 
         public ListenerImpl(String description, Table parent, BaseTable<?> dependent) {
-            super(description);
+            super(description, false,
+                    () -> (Stream.concat(((BaseTable<?>) parent).parents.stream(), Stream.of(parent)))
+                            .flatMapToLong(BaseTable::getParentPerformanceEntryIds).toArray());
             this.parent = parent;
             this.dependent = dependent;
             if (parent.isRefreshing()) {
@@ -1332,5 +1367,49 @@ public abstract class BaseTable<IMPL_TYPE extends BaseTable<IMPL_TYPE>> extends 
         // happen or happen out of order if the listeners were GC'd and not explicitly left unmanaged.
         childListenerReferences.clear();
         parents.clear();
+    }
+
+    /**
+     * Get a LongStream of {@link PerformanceEntry} {@link PerformanceEntry#getId() identifiers} for this table.
+     * 
+     * @return a stream of performance entry ids
+     */
+    @Override
+    public LongStream parentPerformanceEntryIds() {
+        return Stream.concat(Stream.of(this), parents.stream()).flatMapToLong(BaseTable::getParentPerformanceEntryIds);
+    }
+
+    /**
+     * For a given parent, determine if a performance entry is available.
+     *
+     * <p>
+     * Only refreshing sources have performance entry IDs and are included in the stream. ListenerRecorders are ignored,
+     * as the MergedListener provides an appropriate description and parent information.
+     * </p>
+     *
+     * @param p the parent to interrogate
+     * @return a stream of performance entry identifiers
+     */
+    @NotNull
+    private static LongStream getParentPerformanceEntryIds(Object p) {
+        if (p instanceof ListenerRecorder) {
+            // the merged listener takes care of us
+            return LongStream.empty();
+        }
+
+        if (p instanceof InstrumentedTableListenerBase) {
+            final PerformanceEntry entry = ((InstrumentedTableListenerBase) p).getEntry();
+            if (entry != null) {
+                return LongStream.of(entry.getId());
+            }
+        } else if (p instanceof HasRefreshingSource) {
+            return ((HasRefreshingSource) p).sourceEntries().mapToLong(PerformanceEntry::getId);
+        } else if (p instanceof MergedListener) {
+            final PerformanceEntry entry = ((MergedListener) p).getEntry();
+            if (entry != null) {
+                return LongStream.of(entry.getId());
+            }
+        }
+        return LongStream.empty();
     }
 }

@@ -6,7 +6,12 @@ package io.deephaven.engine.table.impl.locations.impl;
 import io.deephaven.base.verify.Require;
 import io.deephaven.engine.liveness.*;
 import io.deephaven.engine.table.BasicDataIndex;
+import io.deephaven.engine.table.ColumnSource;
+import io.deephaven.engine.table.impl.PushdownFilterContext;
+import io.deephaven.engine.table.impl.PushdownResult;
+import io.deephaven.engine.table.impl.select.WhereFilter;
 import io.deephaven.engine.table.impl.util.FieldUtils;
+import io.deephaven.engine.table.impl.util.JobScheduler;
 import io.deephaven.engine.util.string.StringUtils;
 import io.deephaven.engine.table.impl.locations.*;
 import io.deephaven.engine.rowset.RowSet;
@@ -22,6 +27,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 
 /**
  * Partial TableLocation implementation for use by TableDataService implementations.
@@ -219,6 +226,10 @@ public abstract class AbstractTableLocation
             return columns;
         }
 
+        private boolean cached() {
+            return indexReference != null && indexReference.get() != null;
+        }
+
         private BasicDataIndex getDataIndex() {
             SoftReference<BasicDataIndex> localReference = indexReference;
             BasicDataIndex localIndex;
@@ -241,6 +252,20 @@ public abstract class AbstractTableLocation
                 return localIndex;
             }
         }
+    }
+
+    @Override
+    public boolean hasCachedDataIndex(@NotNull final String... columns) {
+        final List<String> columnNames = new ArrayList<>(columns.length);
+        Collections.addAll(columnNames, columns);
+        columnNames.sort(String::compareTo);
+
+        final KeyedObjectHashMap<List<String>, CachedDataIndex> localCachedDataIndexes =
+                FieldUtils.ensureField(this, CACHED_DATA_INDEXES_UPDATER, null,
+                        () -> new KeyedObjectHashMap<>(CACHED_DATA_INDEX_KEY));
+        final CachedDataIndex cachedDataIndex = localCachedDataIndexes.get(columnNames);
+
+        return cachedDataIndex != null && cachedDataIndex.cached();
     }
 
     @Override
@@ -269,6 +294,41 @@ public abstract class AbstractTableLocation
     @InternalUseOnly
     @Nullable
     public abstract BasicDataIndex loadDataIndex(@NotNull String... columns);
+
+    @Override
+    public void estimatePushdownFilterCost(
+            final WhereFilter filter,
+            final RowSet selection,
+            final boolean usePrev,
+            final PushdownFilterContext context,
+            final JobScheduler jobScheduler,
+            final LongConsumer onComplete,
+            final Consumer<Exception> onError) {
+        // Default to having no benefit by pushing down.
+        onComplete.accept(Long.MAX_VALUE);
+    }
+
+    @Override
+    public void pushdownFilter(
+            final WhereFilter filter,
+            final RowSet selection,
+            final boolean usePrev,
+            final PushdownFilterContext context,
+            final long costCeiling,
+            final JobScheduler jobScheduler,
+            final Consumer<PushdownResult> onComplete,
+            final Consumer<Exception> onError) {
+        // Default to returning all results as "maybe"
+        onComplete.accept(PushdownResult.allMaybeMatch(selection));
+    }
+
+    @Override
+    public PushdownFilterContext makePushdownFilterContext(
+            final WhereFilter filter,
+            final List<ColumnSource<?>> filterSources) {
+        throw new UnsupportedOperationException(
+                "makePushdownFilterContext() not supported for AbstractTableLocation");
+    }
 
     // ------------------------------------------------------------------------------------------------------------------
     // Reference counting implementation

@@ -57,6 +57,13 @@ public class FlightSession implements AutoCloseable {
     }
 
     /**
+     * @return the session's FlightClient instance
+     */
+    public FlightClient getClient() {
+        return client;
+    }
+
+    /**
      * Create a schema from the existing handle's response.
      *
      * <p>
@@ -100,6 +107,17 @@ public class FlightSession implements AutoCloseable {
      */
     public FlightClient.ExchangeReaderWriter startExchange(FlightDescriptor descriptor, CallOption... options) {
         return client.doExchange(descriptor, options);
+    }
+
+    /**
+     * Creates a new server side DoExchange session.
+     *
+     * @param hasPathId an object that has a {@link PathId}
+     * @param options the GRPC otions to apply to this call
+     * @return the bi-directional ReaderWriter object
+     */
+    public FlightClient.ExchangeReaderWriter startExchange(final HasPathId hasPathId, final CallOption... options) {
+        return startExchange(FlightClientHelper.descriptor(hasPathId), options);
     }
 
     /**

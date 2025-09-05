@@ -16,6 +16,7 @@ add_executable(dhclient_tests
         src/cython_support_test.cc
         src/date_time_test.cc
         src/filter_test.cc
+        src/group_test.cc
         src/head_and_tail_test.cc
         src/input_table_test.cc
         src/join_test.cc
@@ -32,6 +33,7 @@ add_executable(dhclient_tests
         src/test_util.cc
         src/ticking_test.cc
         src/time_unit_test.cc
+        src/types_test.cc
         src/ungroup_test.cc
         src/update_by_test.cc
         src/utility_test.cc
@@ -47,7 +49,7 @@ if (LINUX)
 endif()
 
 if (WIN32)
-    target_compile_options(dhclient_tests PRIVATE /W3)
+    target_compile_options(dhclient_tests PRIVATE /W3 /MP)
 endif()
 
 target_include_directories(dhclient_tests PRIVATE include/private)

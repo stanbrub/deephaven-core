@@ -54,6 +54,14 @@ public class DoubleRangeFilter extends AbstractRangeFilter {
         }
     }
 
+    public final double getUpper() {
+        return upper;
+    }
+
+    public final double getLower() {
+        return lower;
+    }
+
     public static WhereFilter makeRange(String columnName, String val) {
         final int precision = findPrecision(val);
         final double parsed = Double.parseDouble(val);

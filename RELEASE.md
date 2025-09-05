@@ -103,7 +103,7 @@ $ git fetch upstream
 $ git checkout upstream/main
 $ ./gradlew printVersion -PdeephavenBaseQualifier= -q
 $ git checkout -b release/vX.Y.Z
-$ git commit --allow-empty -m "Cut for X.Y.Z"
+$ git commit --allow-empty -m "chore: Cut for X.Y.Z"
 ```
 
 #### Procedure for patch releases
@@ -127,7 +127,7 @@ $ git cherry-pick <...>
 #
 # See https://github.com/deephaven/deephaven-core/issues/3466 for future improvements to this process.
 $ ...
-$ git commit -m "Bump to X.Y.1"
+$ git commit -m "chore: Bump to X.Y.1"
 $ git --no-pager log --oneline vX.Y.0..release/vX.Y.1
 #
 # Compare output to expected PR list for missing or extraneous PRs
@@ -152,7 +152,7 @@ Note: release branches are _not_ typically merged back into `main`.
 The release will proceed with [GitHub Actions](https://github.com/deephaven/deephaven-core/actions/workflows/publish-ci.yml).
 The specific action can be found based off of the name of the release branch: [?query=branch%3Arelease%2FvX.Y.Z](https://github.com/deephaven/deephaven-core/actions/workflows/publish-ci.yml?query=branch%3Arelease%2FvX.Y.Z).
 
-The "Publish" step creates the artifacts and publishes the jars to a [Maven Central staging repository](https://s01.oss.sonatype.org).
+The "Publish" step creates the artifacts and publishes the jars to a [Maven Central Portal staging repository](https://central.sonatype.com/).
 
 The "Upload Artifacts" step uploads the Deephaven server application, the deephaven-core wheel, and the deephaven-server wheel as *temporary* GitHub action artifacts.
 
@@ -203,7 +203,7 @@ Please post the difference to the Deephaven team to ensure there are no unexpect
 
 ### 7. Maven Central jars
 
-The jars are put into a [Maven Central Repository Manager](https://s01.oss.sonatype.org) staging repository.
+The jars are put into a [Maven Central Portal](https://central.sonatype.com/) staging repository.
 You'll need your own username and password to sign in (to ensure auditability).
 
 Arguably, the Maven Central jars are the most important artifacts - once they are officially released from the staging repository, they are released "forever".
@@ -234,6 +234,12 @@ $ git push upstream vX.Y.Z
 Create a new [GitHub release](https://github.com/deephaven/deephaven-core/releases/new) and use the `vX.Y.Z` tag as reference.
 
 The convention is to have the Release title of the form `vX.Y.Z` and to autogenerate the release notes in comparison to the previous release tag. Question: should we always generate release notes based off of the previous minor release, instead of patch? Our git release workflow suggests we may want to do it always minor to minor.
+
+Do not use Github's "Generate release notes" button. Use Cocogitto to generate the release notes and copy the result into the text box.
+
+```shell
+cog changelog vX.Y.0..vX.Y.1
+```
 
 Upload the Deephaven server application, deephaven-core wheel, pydeephaven wheel, pydeephaven-ticking wheels, @deephaven/jsapi-types tarball, and SBOM artifacts. Also, upload the C++, Java, Python, R and TypeScript docs artifacts.
 (These are the artifacts downloaded in Step #5)

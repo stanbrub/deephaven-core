@@ -5,11 +5,9 @@ package io.deephaven.server.barrage;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.rpc.Code;
-import dagger.assisted.Assisted;
-import dagger.assisted.AssistedFactory;
-import dagger.assisted.AssistedInject;
 import io.deephaven.base.formatters.FormatBitSet;
 import io.deephaven.base.verify.Assert;
+import io.deephaven.chunk.Chunk;
 import io.deephaven.chunk.LongChunk;
 import io.deephaven.chunk.ResettableWritableObjectChunk;
 import io.deephaven.chunk.WritableChunk;
@@ -22,6 +20,7 @@ import io.deephaven.engine.rowset.*;
 import io.deephaven.engine.table.*;
 import io.deephaven.engine.table.impl.*;
 import io.deephaven.engine.table.impl.remote.ConstructSnapshot;
+import io.deephaven.engine.table.impl.select.VectorChunkAdapter;
 import io.deephaven.engine.table.impl.sources.ArrayBackedColumnSource;
 import io.deephaven.engine.table.impl.sources.FillUnordered;
 import io.deephaven.engine.table.impl.sources.ObjectArraySource;
@@ -31,22 +30,29 @@ import io.deephaven.engine.table.impl.util.ShiftInversionHelper;
 import io.deephaven.engine.table.impl.util.UpdateCoalescer;
 import io.deephaven.engine.updategraph.*;
 import io.deephaven.engine.updategraph.impl.PeriodicUpdateGraph;
+import io.deephaven.extensions.barrage.BarrageMessageWriter;
 import io.deephaven.extensions.barrage.BarragePerformanceLog;
-import io.deephaven.extensions.barrage.BarrageStreamGenerator;
 import io.deephaven.extensions.barrage.BarrageSubscriptionOptions;
 import io.deephaven.extensions.barrage.BarrageSubscriptionPerformanceLogger;
+import io.deephaven.extensions.barrage.BarrageTypeInfo;
+import io.deephaven.extensions.barrage.chunk.ChunkWriter;
+import io.deephaven.extensions.barrage.chunk.DefaultChunkWriterFactory;
 import io.deephaven.extensions.barrage.util.BarrageUtil;
 import io.deephaven.extensions.barrage.util.GrpcUtil;
-import io.deephaven.extensions.barrage.util.StreamReader;
+import io.deephaven.extensions.barrage.util.BarrageMessageReader;
 import io.deephaven.internal.log.LoggerFactory;
 import io.deephaven.io.logger.Logger;
+import io.deephaven.proto.flight.util.SchemaHelper;
 import io.deephaven.server.session.SessionService;
 import io.deephaven.server.util.Scheduler;
 import io.deephaven.util.SafeCloseable;
 import io.deephaven.util.SafeCloseableArray;
 import io.deephaven.util.datastructures.LongSizedDataStructure;
+import io.deephaven.vector.Vector;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import org.apache.arrow.flatbuf.Schema;
+import org.apache.commons.lang3.mutable.MutableInt;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.HdrHistogram.Histogram;
@@ -81,7 +87,7 @@ import static io.deephaven.extensions.barrage.util.BarrageUtil.TARGET_SNAPSHOT_P
  * It is possible to use this replication source to create subscriptions that propagate changes from one UGP to another
  * inside the same JVM.
  * <p>
- * The client-side counterpart of this is the {@link StreamReader}.
+ * The client-side counterpart of this is the {@link BarrageMessageReader}.
  */
 public class BarrageMessageProducer extends LivenessArtifact
         implements DynamicNode, NotificationStepReceiver {
@@ -97,38 +103,26 @@ public class BarrageMessageProducer extends LivenessArtifact
     private long snapshotTargetCellCount = MIN_SNAPSHOT_CELL_COUNT;
     private double snapshotNanosPerCell = 0;
 
-    /**
-     * Helper to convert from SubscriptionRequest to Options and from MessageView to InputStream.
-     *
-     * @param <T> Type to convert from.
-     * @param <V> Type to convert to.
-     */
-    public interface Adapter<T, V> {
-        V adapt(T t);
-    }
-
     public static class Operation
             implements QueryTable.MemoizableOperation<BarrageMessageProducer> {
 
-        @AssistedFactory
         public interface Factory {
             Operation create(BaseTable<?> parent, long updateIntervalMs);
         }
 
         private final Scheduler scheduler;
         private final SessionService.ErrorTransformer errorTransformer;
-        private final BarrageStreamGenerator.Factory streamGeneratorFactory;
+        private final BarrageMessageWriter.Factory streamGeneratorFactory;
         private final BaseTable<?> parent;
         private final long updateIntervalMs;
         private final Runnable onGetSnapshot;
 
-        @AssistedInject
         public Operation(
                 final Scheduler scheduler,
                 final SessionService.ErrorTransformer errorTransformer,
-                final BarrageStreamGenerator.Factory streamGeneratorFactory,
-                @Assisted final BaseTable<?> parent,
-                @Assisted final long updateIntervalMs) {
+                final BarrageMessageWriter.Factory streamGeneratorFactory,
+                final BaseTable<?> parent,
+                final long updateIntervalMs) {
             this(scheduler, errorTransformer, streamGeneratorFactory, parent, updateIntervalMs, null);
         }
 
@@ -136,7 +130,7 @@ public class BarrageMessageProducer extends LivenessArtifact
         public Operation(
                 final Scheduler scheduler,
                 final SessionService.ErrorTransformer errorTransformer,
-                final BarrageStreamGenerator.Factory streamGeneratorFactory,
+                final BarrageMessageWriter.Factory streamGeneratorFactory,
                 final BaseTable<?> parent,
                 final long updateIntervalMs,
                 @Nullable final Runnable onGetSnapshot) {
@@ -197,7 +191,7 @@ public class BarrageMessageProducer extends LivenessArtifact
     private final String logPrefix;
     private final Scheduler scheduler;
     private final SessionService.ErrorTransformer errorTransformer;
-    private final BarrageStreamGenerator.Factory streamGeneratorFactory;
+    private final BarrageMessageWriter.Factory streamGeneratorFactory;
 
     private final BaseTable<?> parent;
     private final long updateIntervalMs;
@@ -212,8 +206,10 @@ public class BarrageMessageProducer extends LivenessArtifact
 
     private final Stats stats;
 
-    /** the possibly reinterpretted source column */
-    private final ColumnSource<?>[] sourceColumns;
+    /** the possibly reinterpretted, or vector-adapted source column */
+    private final ChunkSource.WithPrev<Values>[] chunkSources;
+    /** the chunk writer per source column */
+    private final ChunkWriter<Chunk<Values>>[] chunkWriters;
     /** which source columns are object columns and thus need proactive garbage collection */
     private final BitSet objectColumns = new BitSet();
     /** internally, booleans are reinterpretted to bytes; however we need to be packed bitsets over Arrow */
@@ -306,7 +302,7 @@ public class BarrageMessageProducer extends LivenessArtifact
     public BarrageMessageProducer(
             final Scheduler scheduler,
             final SessionService.ErrorTransformer errorTransformer,
-            final BarrageStreamGenerator.Factory streamGeneratorFactory,
+            final BarrageMessageWriter.Factory streamGeneratorFactory,
             final BaseTable<?> parent,
             final long updateIntervalMs,
             final Runnable onGetSnapshot) {
@@ -339,21 +335,46 @@ public class BarrageMessageProducer extends LivenessArtifact
                     .append(updateIntervalMs).endl();
         }
 
-        sourceColumns = parent.getColumnSources().toArray(ColumnSource.ZERO_LENGTH_COLUMN_SOURCE_ARRAY);
-        deltaColumns = new WritableColumnSource[sourceColumns.length];
-        realColumnType = new Class<?>[sourceColumns.length];
-        realColumnComponentType = new Class<?>[sourceColumns.length];
+        final ColumnSource<?>[] sources =
+                parent.getColumnSources().toArray(ColumnSource.ZERO_LENGTH_COLUMN_SOURCE_ARRAY);
+        // noinspection unchecked
+        chunkSources = new ChunkSource.WithPrev[sources.length];
+        deltaColumns = new WritableColumnSource[sources.length];
+        realColumnType = new Class<?>[sources.length];
+        realColumnComponentType = new Class<?>[sources.length];
+
+        // lookup ChunkWriter mappings once, as they are constant for the lifetime of this producer
+        // noinspection unchecked
+        chunkWriters = (ChunkWriter<Chunk<Values>>[]) new ChunkWriter[sources.length];
+
+        final MutableInt mi = new MutableInt();
+        final Schema schema = SchemaHelper.flatbufSchema(
+                BarrageUtil.schemaBytesFromTable(parent).asReadOnlyByteBuffer());
+
+        parent.getColumnSourceMap().forEach((columnName, columnSource) -> {
+            int ii = mi.getAndIncrement();
+            chunkWriters[ii] = DefaultChunkWriterFactory.INSTANCE.newWriter(BarrageTypeInfo.make(
+                    ReinterpretUtils.maybeConvertToPrimitiveDataType(columnSource.getType()),
+                    columnSource.getComponentType(),
+                    schema.fields(ii)));
+        });
 
         // we start off with initial sizes of zero, because its quite possible no one will ever look at this table
         final int capacity = 0;
 
-        for (int ci = 0; ci < sourceColumns.length; ++ci) {
+        for (int ci = 0; ci < sources.length; ++ci) {
             // avoid silly reinterpretations during ser/deser by using primitive types when possible
-            realColumnType[ci] = sourceColumns[ci].getType();
-            realColumnComponentType[ci] = sourceColumns[ci].getComponentType();
-            sourceColumns[ci] = ReinterpretUtils.maybeConvertToPrimitive(sourceColumns[ci]);
+            realColumnType[ci] = sources[ci].getType();
+            realColumnComponentType[ci] = sources[ci].getComponentType();
+
+            sources[ci] = ReinterpretUtils.maybeConvertToPrimitive(sources[ci]);
+            if (Vector.class.isAssignableFrom(sources[ci].getType())) {
+                chunkSources[ci] = new VectorChunkAdapter<>(sources[ci]);
+            } else {
+                chunkSources[ci] = sources[ci];
+            }
             deltaColumns[ci] = ArrayBackedColumnSource.getMemoryColumnSource(
-                    capacity, sourceColumns[ci].getType(), sourceColumns[ci].getComponentType());
+                    capacity, sources[ci].getType(), sources[ci].getComponentType());
 
             if (deltaColumns[ci] instanceof ObjectArraySource) {
                 objectColumns.set(ci);
@@ -413,7 +434,7 @@ public class BarrageMessageProducer extends LivenessArtifact
      */
     private static class Subscription {
         private final BarrageSubscriptionOptions options;
-        private final StreamObserver<BarrageStreamGenerator.MessageView> listener;
+        private final StreamObserver<BarrageMessageWriter.MessageView> listener;
         private final String logPrefix;
 
         /** active viewport **/
@@ -462,7 +483,7 @@ public class BarrageMessageProducer extends LivenessArtifact
         /** is this the first snapshot after a change to a subscriptions */
         private boolean isFirstSnapshot;
 
-        private Subscription(final StreamObserver<BarrageStreamGenerator.MessageView> listener,
+        private Subscription(final StreamObserver<BarrageMessageWriter.MessageView> listener,
                 final BarrageSubscriptionOptions options,
                 final BitSet subscribedColumns,
                 @Nullable final RowSet initialViewport,
@@ -496,7 +517,7 @@ public class BarrageMessageProducer extends LivenessArtifact
      * @param columnsToSubscribe The initial columns to subscribe to
      * @param initialViewport Initial viewport, to be owned by the subscription
      */
-    public void addSubscription(final StreamObserver<BarrageStreamGenerator.MessageView> listener,
+    public void addSubscription(final StreamObserver<BarrageMessageWriter.MessageView> listener,
             final BarrageSubscriptionOptions options,
             @Nullable final BitSet columnsToSubscribe,
             @Nullable final RowSet initialViewport,
@@ -516,8 +537,8 @@ public class BarrageMessageProducer extends LivenessArtifact
 
             final BitSet cols;
             if (columnsToSubscribe == null) {
-                cols = new BitSet(sourceColumns.length);
-                cols.set(0, sourceColumns.length);
+                cols = new BitSet(chunkSources.length);
+                cols.set(0, chunkSources.length);
             } else {
                 cols = (BitSet) columnsToSubscribe.clone();
             }
@@ -541,7 +562,7 @@ public class BarrageMessageProducer extends LivenessArtifact
         }
     }
 
-    private boolean findAndUpdateSubscription(final StreamObserver<BarrageStreamGenerator.MessageView> listener,
+    private boolean findAndUpdateSubscription(final StreamObserver<BarrageMessageWriter.MessageView> listener,
             final Consumer<Subscription> updateSubscription) {
         final Function<List<Subscription>, Boolean> findAndUpdate = (List<Subscription> subscriptions) -> {
             for (final Subscription sub : subscriptions) {
@@ -569,14 +590,14 @@ public class BarrageMessageProducer extends LivenessArtifact
         }
     }
 
-    public boolean updateSubscription(final StreamObserver<BarrageStreamGenerator.MessageView> listener,
+    public boolean updateSubscription(final StreamObserver<BarrageMessageWriter.MessageView> listener,
             @Nullable final RowSet newViewport, @Nullable final BitSet columnsToSubscribe) {
         // assume forward viewport when not specified
         return updateSubscription(listener, newViewport, columnsToSubscribe, false);
     }
 
     public boolean updateSubscription(
-            final StreamObserver<BarrageStreamGenerator.MessageView> listener,
+            final StreamObserver<BarrageMessageWriter.MessageView> listener,
             @Nullable final RowSet newViewport,
             @Nullable final BitSet columnsToSubscribe,
             final boolean newReverseViewport) {
@@ -602,8 +623,8 @@ public class BarrageMessageProducer extends LivenessArtifact
             }
             final BitSet cols;
             if (columnsToSubscribe == null) {
-                cols = new BitSet(sourceColumns.length);
-                cols.set(0, sourceColumns.length);
+                cols = new BitSet(chunkSources.length);
+                cols.set(0, chunkSources.length);
             } else {
                 cols = (BitSet) columnsToSubscribe.clone();
             }
@@ -616,7 +637,7 @@ public class BarrageMessageProducer extends LivenessArtifact
         });
     }
 
-    public void removeSubscription(final StreamObserver<BarrageStreamGenerator.MessageView> listener) {
+    public void removeSubscription(final StreamObserver<BarrageMessageWriter.MessageView> listener) {
         findAndUpdateSubscription(listener, sub -> {
             sub.pendingDelete = true;
             if (log.isDebugEnabled()) {
@@ -701,25 +722,25 @@ public class BarrageMessageProducer extends LivenessArtifact
 
     private static class FillDeltaContext implements SafeCloseable {
         final int columnIndex;
-        final ColumnSource<?> sourceColumn;
+        final ChunkSource.WithPrev<Values> chunkSource;
         final WritableColumnSource<?> deltaColumn;
         final ColumnSource.GetContext sourceGetContext;
         final ChunkSink.FillFromContext deltaFillContext;
 
         public FillDeltaContext(final int columnIndex,
-                final ColumnSource<?> sourceColumn,
+                final ChunkSource.WithPrev<Values> chunkSource,
                 final WritableColumnSource<?> deltaColumn,
                 final SharedContext sharedContext,
                 final int chunkSize) {
             this.columnIndex = columnIndex;
-            this.sourceColumn = sourceColumn;
+            this.chunkSource = chunkSource;
             this.deltaColumn = deltaColumn;
-            sourceGetContext = sourceColumn.makeGetContext(chunkSize, sharedContext);
+            sourceGetContext = chunkSource.makeGetContext(chunkSize, sharedContext);
             deltaFillContext = deltaColumn.makeFillFromContext(chunkSize);
         }
 
         public void doFillChunk(final RowSequence srcKeys, final RowSequence dstKeys) {
-            deltaColumn.fillFromChunk(deltaFillContext, sourceColumn.getChunk(sourceGetContext, srcKeys), dstKeys);
+            deltaColumn.fillFromChunk(deltaFillContext, chunkSource.getChunk(sourceGetContext, srcKeys), dstKeys);
         }
 
         @Override
@@ -937,7 +958,7 @@ public class BarrageMessageProducer extends LivenessArtifact
                         continue;
                     }
                     deltaColumns[columnIndex].ensureCapacity(totalSize);
-                    fillDeltaContexts[aci++] = new FillDeltaContext(columnIndex, sourceColumns[columnIndex],
+                    fillDeltaContexts[aci++] = new FillDeltaContext(columnIndex, chunkSources[columnIndex],
                             deltaColumns[columnIndex], sharedContext, deltaChunkSize);
                 }
 
@@ -1498,8 +1519,8 @@ public class BarrageMessageProducer extends LivenessArtifact
         }
 
         if (snapshot != null) {
-            try (final BarrageStreamGenerator snapshotGenerator =
-                    streamGeneratorFactory.newGenerator(snapshot, this::recordWriteMetrics)) {
+            try (final BarrageMessageWriter snapshotGenerator =
+                    streamGeneratorFactory.newMessageWriter(snapshot, chunkWriters, this::recordWriteMetrics)) {
                 if (log.isDebugEnabled()) {
                     log.debug().append(logPrefix).append("Sending snapshot to ").append(activeSubscriptions.size())
                             .append(" subscriber(s).").endl();
@@ -1560,8 +1581,8 @@ public class BarrageMessageProducer extends LivenessArtifact
             final RowSet propRowSetForMessagePrev,
             final RowSet propRowSetForMessage) {
         // message is released via transfer to stream generator (as it must live until all views are closed)
-        try (final BarrageStreamGenerator generator = streamGeneratorFactory.newGenerator(
-                message, this::recordWriteMetrics)) {
+        try (final BarrageMessageWriter bmw = streamGeneratorFactory.newMessageWriter(
+                message, chunkWriters, this::recordWriteMetrics)) {
             for (final Subscription subscription : activeSubscriptions) {
                 if (subscription.pendingInitialSnapshot || subscription.pendingDelete) {
                     continue;
@@ -1586,7 +1607,7 @@ public class BarrageMessageProducer extends LivenessArtifact
                         vp != null ? propRowSetForMessagePrev.subSetForPositions(vp, isReversed) : null;
                         final RowSet clientView =
                                 vp != null ? propRowSetForMessage.subSetForPositions(vp, isReversed) : null) {
-                    subscription.listener.onNext(generator.getSubView(
+                    subscription.listener.onNext(bmw.getSubView(
                             subscription.options, false, subscription.isFullSubscription(), vp,
                             subscription.reverseViewport, clientViewPrev, clientView, cols));
                 } catch (final Exception e) {
@@ -1616,7 +1637,7 @@ public class BarrageMessageProducer extends LivenessArtifact
     }
 
     private void propagateSnapshotForSubscription(final Subscription subscription,
-            final BarrageStreamGenerator snapshotGenerator) {
+            final BarrageMessageWriter snapshotGenerator) {
         boolean needsSnapshot = subscription.pendingInitialSnapshot;
 
         // This is a little confusing, but by the time we propagate, the `snapshotViewport`/`snapshotColumns` objects
@@ -1764,8 +1785,8 @@ public class BarrageMessageProducer extends LivenessArtifact
             downstream.shifted = firstDelta.update.shifted();
             downstream.rowsIncluded = firstDelta.recordedAdds.copy();
 
-            downstream.addColumnData = new BarrageMessage.AddColumnData[sourceColumns.length];
-            downstream.modColumnData = new BarrageMessage.ModColumnData[sourceColumns.length];
+            downstream.addColumnData = new BarrageMessage.AddColumnData[chunkSources.length];
+            downstream.modColumnData = new BarrageMessage.ModColumnData[chunkSources.length];
 
             for (int ci = 0; ci < downstream.addColumnData.length; ++ci) {
                 final ColumnSource<?> deltaColumn = deltaColumns[ci];
@@ -1978,8 +1999,8 @@ public class BarrageMessageProducer extends LivenessArtifact
             downstream.rowsRemoved = coalescer.removed;
             downstream.shifted = coalescer.shifted;
             downstream.rowsIncluded = localAdded;
-            downstream.addColumnData = new BarrageMessage.AddColumnData[sourceColumns.length];
-            downstream.modColumnData = new BarrageMessage.ModColumnData[sourceColumns.length];
+            downstream.addColumnData = new BarrageMessage.AddColumnData[chunkSources.length];
+            downstream.modColumnData = new BarrageMessage.ModColumnData[chunkSources.length];
 
             for (int ci = 0; ci < downstream.addColumnData.length; ++ci) {
                 final ColumnSource<?> deltaColumn = deltaColumns[ci];
@@ -2368,7 +2389,6 @@ public class BarrageMessageProducer extends LivenessArtifact
             scheduler.runAfterDelay(BarragePerformanceLog.CYCLE_DURATION_MILLIS, this);
             final BarrageSubscriptionPerformanceLogger logger =
                     BarragePerformanceLog.getInstance().getSubscriptionLogger();
-            // noinspection SynchronizationOnLocalVariableOrMethodParameter
             synchronized (logger) {
                 flush(now, logger, enqueue, "EnqueueMillis");
                 flush(now, logger, aggregate, "AggregateMillis");

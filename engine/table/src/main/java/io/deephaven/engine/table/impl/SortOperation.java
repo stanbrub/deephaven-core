@@ -3,8 +3,8 @@
 //
 package io.deephaven.engine.table.impl;
 
+import io.deephaven.api.SortSpec;
 import io.deephaven.base.verify.Assert;
-import io.deephaven.base.verify.Require;
 import io.deephaven.chunk.LongChunk;
 import io.deephaven.chunk.WritableLongChunk;
 import io.deephaven.engine.rowset.*;
@@ -26,22 +26,33 @@ import org.apache.commons.lang3.mutable.MutableObject;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.function.LongUnaryOperator;
 
 import static io.deephaven.engine.table.Table.SORT_REVERSE_LOOKUP_ATTRIBUTE;
+import static io.deephaven.engine.table.Table.SORT_ROW_REDIRECTION_ATTRIBUTE;
+import static io.deephaven.engine.table.impl.SortHelpers.AllowSymbolTable.ALLOW_SYMBOL_TABLE;
+import static io.deephaven.engine.table.impl.SortHelpers.AllowSymbolTable.DISALLOW_SYMBOL_TABLE;
 
 public class SortOperation implements QueryTable.MemoizableOperation<QueryTable> {
+    static final Map<String, Object> IDENTITY_REDIRECTION_ATTRIBUTES;
+    // The "+" sign is not valid in a column, therefore we can be sure that this is a proper sentinel value.
+    static final String IDENTITY_REDIRECTION_VALUE = "+IDENTITY_REDIRECTION";
+    static {
+        final HashMap<String, Object> identityRedirectionAttributes = new HashMap<>();
+        identityRedirectionAttributes.put(SORT_ROW_REDIRECTION_ATTRIBUTE, IDENTITY_REDIRECTION_VALUE);
+        IDENTITY_REDIRECTION_ATTRIBUTES = Collections.unmodifiableMap(identityRedirectionAttributes);
+    }
 
     private final QueryTable parent;
     private QueryTable resultTable;
     private RowRedirection sortMapping;
 
-    private final SortPair[] sortPairs;
-    private final SortingOrder[] sortOrder;
     private final String[] sortColumnNames;
+    private final SortSpec[] sortSpec;
+    private final SortingOrder[] sortOrder;
+    private final Comparator[] comparators;
+    private final boolean[] comparatorsRespectEquality;
     /** Stores original column sources. */
     private final ColumnSource<Comparable<?>>[] originalSortColumns;
     /** Stores reinterpreted column sources. */
@@ -49,28 +60,50 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
 
     private final DataIndex dataIndex;
 
-    public SortOperation(QueryTable parent, SortPair[] sortPairs) {
+    public SortOperation(final QueryTable parent, final SortSpec[] sortSpecIn) {
         this.parent = parent;
-        this.sortPairs = sortPairs;
-        this.sortOrder = Arrays.stream(sortPairs).map(SortPair::getOrder).toArray(SortingOrder[]::new);
-        this.sortColumnNames = Arrays.stream(sortPairs).map(SortPair::getColumn).toArray(String[]::new);
-
+        this.sortSpec = sortSpecIn;
+        this.sortOrder = Arrays.stream(sortSpecIn).map(SortingOrder::from).toArray(SortingOrder[]::new);
+        this.sortColumnNames = new String[sortSpecIn.length];
+        this.comparators = new Comparator[sortSpec.length];
+        this.comparatorsRespectEquality = new boolean[sortSpec.length];
         // noinspection unchecked
-        originalSortColumns = new ColumnSource[sortColumnNames.length];
+        originalSortColumns = new ColumnSource[sortSpecIn.length];
         // noinspection unchecked
-        sortColumns = new ColumnSource[sortColumnNames.length];
+        sortColumns = new ColumnSource[sortSpecIn.length];
 
-        for (int ii = 0; ii < sortColumnNames.length; ++ii) {
-            originalSortColumns[ii] = parent.getColumnSource(sortColumnNames[ii]);
+        for (int ii = 0; ii < sortSpecIn.length; ++ii) {
+            final String sortColumnName = sortColumnNames[ii] = sortSpecIn[ii].column().name();
+
+            originalSortColumns[ii] = parent.getColumnSource(sortColumnName);
             // noinspection unchecked
             sortColumns[ii] =
                     (ColumnSource<Comparable<?>>) ReinterpretUtils.maybeConvertToPrimitive(originalSortColumns[ii]);
 
-            Require.requirement(
-                    Comparable.class.isAssignableFrom(sortColumns[ii].getType())
-                            || sortColumns[ii].getType().isPrimitive(),
-                    "Comparable.class.isAssignableFrom(sortColumns[ii].getType()) || sortColumns[ii].getType().isPrimitive()",
-                    sortColumnNames[ii], "sortColumnNames[ii]", sortColumns[ii].getType(), "sortColumns[ii].getType()");
+            final Class<?> columnType = sortColumns[ii].getType();
+
+            if (ComparatorSortColumn.hasComparator(sortSpecIn[ii])) {
+                if (columnType.isPrimitive()) {
+                    throw new NotSortableColumnException(sortColumnName + " is a primitive column (" + columnType
+                            + "), therefore cannot accept a Comparator");
+                }
+
+                comparators[ii] = ((ComparatorSortColumn) sortSpecIn[ii]).comparator();
+                comparatorsRespectEquality[ii] = ((ComparatorSortColumn) sortSpecIn[ii]).respectsEquality();
+            } else {
+                comparatorsRespectEquality[ii] = true;
+
+                final Comparator<?> defaultComparator = ComparatorRegistry.INSTANCE.getComparator(columnType);
+                if (defaultComparator == null) {
+                    final boolean isSortable =
+                            Comparable.class.isAssignableFrom(columnType) || columnType.isPrimitive();
+                    if (!isSortable) {
+                        throw new NotSortableColumnException(sortColumnName + " is not a sortable type: " + columnType);
+                    }
+                } else {
+                    comparators[ii] = defaultComparator;
+                }
+            }
         }
 
         parent.assertSortable(sortColumnNames);
@@ -81,7 +114,7 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
 
     @Override
     public String getDescription() {
-        return "sort(" + Arrays.toString(sortPairs) + ")";
+        return "sort(" + Arrays.toString(sortSpec) + ")";
     }
 
     @Override
@@ -91,7 +124,7 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
 
     @Override
     public MemoizedOperationKey getMemoizedOperationKey() {
-        return MemoizedOperationKey.sort(sortPairs);
+        return MemoizedOperationKey.sort(sortSpec);
     }
 
     @Override
@@ -135,14 +168,12 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
         final TrackingRowSet resultRowSet = RowSetFactory.flat(sortedKeys.size()).toTracking();
 
         final Map<String, ColumnSource<?>> resultMap = new LinkedHashMap<>();
-        for (Map.Entry<String, ColumnSource<?>> stringColumnSourceEntry : parent.getColumnSourceMap().entrySet()) {
-            resultMap.put(stringColumnSourceEntry.getKey(),
-                    RedirectedColumnSource.maybeRedirect(sortMapping, stringColumnSourceEntry.getValue()));
-        }
+        final String sortMappingColumnName = populateRedirectedColumns(resultMap, sortMapping);
 
         resultTable = new QueryTable(resultRowSet, resultMap);
         parent.copyAttributes(resultTable, BaseTable.CopyAttributeOperation.Sort);
         resultTable.setFlat();
+        resultTable.setAttribute(SORT_ROW_REDIRECTION_ATTRIBUTE, sortMappingColumnName);
         setSorted(resultTable);
         return resultTable;
     }
@@ -195,8 +226,10 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
                         }
 
                         final SortHelpers.SortMapping updateSortedKeys =
-                                SortHelpers.getSortedKeys(sortOrder, originalSortColumns, sortColumns, null,
-                                        upstream.added(), false, false);
+                                SortHelpers.getSortedKeys(sortOrder, originalSortColumns, sortColumns,
+                                        comparators,
+                                        comparatorsRespectEquality, null,
+                                        upstream.added(), false, DISALLOW_SYMBOL_TABLE);
                         final LongChunkColumnSource recycled = recycledInnerRedirectionSource.getValue();
                         recycledInnerRedirectionSource.setValue(null);
                         final LongChunkColumnSource updateInnerRedirectSource =
@@ -228,21 +261,23 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
     }
 
     private QueryTable withSorted(QueryTable table) {
-        return (QueryTable) SortedColumnsAttribute.withOrderForColumn(table, sortColumnNames[0], sortOrder[0]);
+        return (QueryTable) SortedColumnsAttribute.withOrderForColumn(table, sortColumnNames[0], sortOrder[0],
+                IDENTITY_REDIRECTION_ATTRIBUTES);
     }
 
     @Override
     public Result<QueryTable> initialize(boolean usePrev, long beforeClock) {
         if (!parent.isRefreshing()) {
             final SortHelpers.SortMapping sortedKeys =
-                    SortHelpers.getSortedKeys(sortOrder, originalSortColumns, sortColumns, dataIndex,
-                            parent.getRowSet(), false);
+                    SortHelpers.getSortedKeys(sortOrder, originalSortColumns, sortColumns, comparators,
+                            comparatorsRespectEquality, dataIndex, parent.getRowSet(), false, ALLOW_SYMBOL_TABLE);
             return new Result<>(historicalSort(sortedKeys));
         }
         if (parent.isBlink()) {
             final RowSet rowSetToUse = usePrev ? parent.getRowSet().prev() : parent.getRowSet();
-            final SortHelpers.SortMapping sortedKeys = SortHelpers.getSortedKeys(
-                    sortOrder, originalSortColumns, sortColumns, dataIndex, rowSetToUse, usePrev);
+            final SortHelpers.SortMapping sortedKeys =
+                    SortHelpers.getSortedKeys(sortOrder, originalSortColumns, sortColumns, comparators,
+                            comparatorsRespectEquality, dataIndex, rowSetToUse, usePrev, ALLOW_SYMBOL_TABLE);
             return blinkTableSort(sortedKeys);
         }
 
@@ -257,8 +292,10 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
                         + Integer.MAX_VALUE + " rows, table is" + rowSetToSort.size());
             }
 
-            final long[] sortedKeys = SortHelpers.getSortedKeys(
-                    sortOrder, originalSortColumns, sortColumns, dataIndex, rowSetToSort, usePrev).getArrayMapping();
+            final long[] sortedKeys = SortHelpers
+                    .getSortedKeys(sortOrder, originalSortColumns, sortColumns, comparators, comparatorsRespectEquality,
+                            dataIndex, rowSetToSort, usePrev, ALLOW_SYMBOL_TABLE)
+                    .getArrayMapping();
 
             final HashMapK4V4 reverseLookup = new HashMapLockFreeK4V4(sortedKeys.length, .75f, -3);
             sortMapping = SortHelpers.createSortRowRedirection();
@@ -280,10 +317,7 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
             sortMapping.writableCast().fillFromChunk(fillFromContext, LongChunk.chunkWrap(sortedKeys),
                     closer.add(resultRowSet.copy()));
 
-            for (Map.Entry<String, ColumnSource<?>> stringColumnSourceEntry : parent.getColumnSourceMap().entrySet()) {
-                resultMap.put(stringColumnSourceEntry.getKey(),
-                        RedirectedColumnSource.maybeRedirect(sortMapping, stringColumnSourceEntry.getValue()));
-            }
+            String sortMappingColumnName = populateRedirectedColumns(resultMap, sortMapping);
 
             // noinspection unchecked
             final ColumnSource<Comparable<?>>[] sortedColumnsToSortBy =
@@ -298,13 +332,15 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
 
             resultTable = new QueryTable(resultRowSet, resultMap);
             parent.copyAttributes(resultTable, BaseTable.CopyAttributeOperation.Sort);
+            resultTable.setAttribute(SORT_ROW_REDIRECTION_ATTRIBUTE, sortMappingColumnName);
             setReverseLookup(resultTable, (final long innerRowKey) -> {
                 final long outerRowKey = reverseLookup.get(innerRowKey);
                 return outerRowKey == reverseLookup.getNoEntryValue() ? RowSequence.NULL_ROW_KEY : outerRowKey;
             });
 
             final SortListener listener = new SortListener(parent, resultTable, reverseLookup,
-                    originalSortColumns, sortColumns, sortOrder,
+                    originalSortColumns, sortColumns, sortOrder, comparators,
+                    comparatorsRespectEquality,
                     sortMapping.writableCast(), sortedColumnsToSortBy,
                     parent.newModifiedColumnSetIdentityTransformer(resultTable),
                     parent.newModifiedColumnSet(sortColumnNames));
@@ -320,19 +356,34 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
         }
     }
 
+    private String populateRedirectedColumns(Map<String, ColumnSource<?>> resultMap, RowRedirection sortMapping) {
+        // if nothing is actually redirected, we can use the identity value
+        String sortMappingColumnName = IDENTITY_REDIRECTION_VALUE;
+
+        for (Map.Entry<String, ColumnSource<?>> stringColumnSourceEntry : parent.getColumnSourceMap().entrySet()) {
+            final ColumnSource<?> innerSource = stringColumnSourceEntry.getValue();
+            final ColumnSource<?> redirectedSource = RedirectedColumnSource.maybeRedirect(sortMapping, innerSource);
+            resultMap.put(stringColumnSourceEntry.getKey(), redirectedSource);
+            if (redirectedSource != innerSource) {
+                sortMappingColumnName = stringColumnSourceEntry.getKey();
+            }
+        }
+        return sortMappingColumnName;
+    }
+
     /**
      * Get the row redirection for a sort result.
      *
      * @param sortResult The sort result table; <em>must</em> be the direct result of a sort.
-     * @return The row redirection if at least one column required redirection, otherwise {@code null}
+     * @return The row redirection for this table if at least one column required redirection, otherwise {@code null}
      */
     public static RowRedirection getRowRedirection(@NotNull final Table sortResult) {
-        for (final ColumnSource<?> columnSource : sortResult.getColumnSources()) {
-            if (columnSource instanceof RedirectedColumnSource) {
-                return ((RedirectedColumnSource<?>) columnSource).getRowRedirection();
-            }
+        final String columnName = (String) sortResult.getAttribute(SORT_ROW_REDIRECTION_ATTRIBUTE);
+        if (columnName == null || columnName.equals(IDENTITY_REDIRECTION_VALUE)) {
+            return null;
         }
-        return null;
+
+        return ((RedirectedColumnSource<?>) sortResult.getColumnSource(columnName)).getRowRedirection();
     }
 
     /**
@@ -351,7 +402,7 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
      *
      * @param parent The sort input table; must have been sorted in order to produce {@code sortResult}
      * @param sortResult The sort result table; <em>must</em> be the direct result of a sort on {@code parent}
-     * @return The reverse lookup
+     * @return The reverse lookup, or null if no redirection is performed.
      */
     public static LongUnaryOperator getReverseLookup(@NotNull final Table parent, @NotNull final Table sortResult) {
         if (BlinkTableTools.isBlink(parent)) {
@@ -365,9 +416,8 @@ public class SortOperation implements QueryTable.MemoizableOperation<QueryTable>
             return (LongUnaryOperator) value;
         }
         final RowRedirection sortRedirection = getRowRedirection(sortResult);
-        if (sortRedirection == null || sortRedirection == getRowRedirection(parent)) {
-            // Static table was already sorted
-            return LongUnaryOperator.identity();
+        if (sortRedirection == null) {
+            return null;
         }
         final HashMapK4V4 reverseLookup = new HashMapLockFreeK4V4(sortResult.intSize(), .75f, RowSequence.NULL_ROW_KEY);
         try (final LongColumnIterator innerRowKeys =

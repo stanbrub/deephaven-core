@@ -3,9 +3,10 @@
 #
 """ This module adds Iceberg table support into Deephaven. """
 from __future__ import annotations
-from typing import Optional, Dict, Union, Sequence
+from typing import Optional, Dict, Union, Sequence, Mapping
 
 import jpy
+from warnings import warn
 
 from deephaven import DHError
 from deephaven._wrapper import JObjectWrapper
@@ -14,16 +15,23 @@ from deephaven.table import Table, TableDefinition, TableDefinitionLike
 
 from deephaven.jcompat import j_hashmap
 
+_JBuildCatalogOptions = jpy.get_type("io.deephaven.iceberg.util.BuildCatalogOptions")
 _JIcebergUpdateMode = jpy.get_type("io.deephaven.iceberg.util.IcebergUpdateMode")
 _JIcebergReadInstructions = jpy.get_type("io.deephaven.iceberg.util.IcebergReadInstructions")
 _JIcebergWriteInstructions = jpy.get_type("io.deephaven.iceberg.util.IcebergWriteInstructions")
 _JSchemaProvider = jpy.get_type("io.deephaven.iceberg.util.SchemaProvider")
+_JSortOrderProvider = jpy.get_type("io.deephaven.iceberg.util.SortOrderProvider")
 _JTableParquetWriterOptions = jpy.get_type("io.deephaven.iceberg.util.TableParquetWriterOptions")
 _JIcebergCatalogAdapter = jpy.get_type("io.deephaven.iceberg.util.IcebergCatalogAdapter")
 _JIcebergTableAdapter = jpy.get_type("io.deephaven.iceberg.util.IcebergTableAdapter")
 _JIcebergTableWriter = jpy.get_type("io.deephaven.iceberg.util.IcebergTableWriter")
 _JIcebergTable = jpy.get_type("io.deephaven.iceberg.util.IcebergTable")
 _JIcebergTools = jpy.get_type("io.deephaven.iceberg.util.IcebergTools")
+_JLoadTableOptions = jpy.get_type("io.deephaven.iceberg.util.LoadTableOptions")
+_JResolverProvider = jpy.get_type("io.deephaven.iceberg.util.ResolverProvider")
+_JInferenceResolver = jpy.get_type("io.deephaven.iceberg.util.InferenceResolver")
+_JUnboundResolver = jpy.get_type("io.deephaven.iceberg.util.UnboundResolver")
+_JColumnInstructions = jpy.get_type("io.deephaven.iceberg.util.ColumnInstructions")
 
 # IcebergToolsS3 is an optional library
 try:
@@ -38,7 +46,7 @@ _JSnapshot = jpy.get_type("org.apache.iceberg.Snapshot")
 
 class IcebergUpdateMode(JObjectWrapper):
     """
-    :class:`.IcebergUpdateMode` specifies the update mode for an Iceberg table to be loaded into Deephaven. The modes
+    `IcebergUpdateMode` specifies the update mode for an Iceberg table to be loaded into Deephaven. The modes
     are:
 
     - :py:func:`static() <IcebergUpdateMode.static>`: The table is loaded once and does not change
@@ -86,9 +94,8 @@ class IcebergUpdateMode(JObjectWrapper):
 
 class IcebergReadInstructions(JObjectWrapper):
     """
-    :class:`.IcebergReadInstructions` specifies the instructions for reading an Iceberg table into Deephaven. These
-    include column rename instructions and table definitions, as well as special data instructions for loading data
-    files from the cloud.
+    `IcebergReadInstructions` specifies the instructions for reading an Iceberg table into Deephaven. These include
+    special data instructions for loading data files from the cloud.
     """
 
     j_object_type = _JIcebergReadInstructions
@@ -98,22 +105,24 @@ class IcebergReadInstructions(JObjectWrapper):
                  data_instructions: Optional[s3.S3Instructions] = None,
                  column_renames: Optional[Dict[str, str]] = None,
                  update_mode: Optional[IcebergUpdateMode] = None,
-                 snapshot_id: Optional[int] = None):
+                 snapshot_id: Optional[int] = None,
+                 ignore_resolving_errors: bool = False):
         """
         Initializes the instructions using the provided parameters.
 
         Args:
-            table_definition (Optional[TableDefinitionLike]): the table definition; if omitted,
-                the definition is inferred from the Iceberg schema. Setting a definition guarantees the returned table
-                will have that definition. This is useful for specifying a subset of the Iceberg schema columns.
+            table_definition (Optional[TableDefinitionLike]): this parameter is deprecated and has no effect
             data_instructions (Optional[s3.S3Instructions]): Special instructions for reading data files, useful when
-                reading files from a non-local file system, like S3.
-            column_renames (Optional[Dict[str, str]]): A dictionary of old to new column names that will be renamed in
-                the output table.
+                reading files from a non-local file system, like S3. If omitted, the data instructions will be derived
+                from the catalog.
+            column_renames (Optional[Dict[str, str]]): this parameter is deprecated and has no effect
             update_mode (Optional[IcebergUpdateMode]): The update mode for the table. If omitted, the default update
                 mode of :py:func:`IcebergUpdateMode.static() <IcebergUpdateMode.static>` is used.
             snapshot_id (Optional[int]): the snapshot id to read; if omitted the most recent snapshot will be selected.
-
+            ignore_resolving_errors (bool): Controls whether to ignore unexpected resolving errors by silently returning
+                null data for columns that can't be resolved in DataFiles where they should be present. These errors may
+                be a sign of an incorrect resolver or name mapping; or an Iceberg metadata / data issue. By default, is
+                `False`.
         Raises:
             DHError: If unable to build the instructions object.
         """
@@ -122,20 +131,29 @@ class IcebergReadInstructions(JObjectWrapper):
             builder = self.j_object_type.builder()
 
             if table_definition:
-                builder.tableDefinition(TableDefinition(table_definition).j_table_definition)
+                warn(
+                    "The table_definition parameter is deprecated, has no effect",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
             if data_instructions:
                 builder.dataInstructions(data_instructions.j_object)
 
             if column_renames:
-                for old_name, new_name in column_renames.items():
-                    builder.putColumnRenames(old_name, new_name)
+                warn(
+                    "This column_renames parameter is deprecated, has no effect",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
             if update_mode:
                 builder.updateMode(update_mode.j_object)
 
             if snapshot_id:
                 builder.snapshotId(snapshot_id)
+
+            builder.ignoreResolvingErrors(ignore_resolving_errors)
 
             self._j_object = builder.build()
         except Exception as e:
@@ -148,7 +166,7 @@ class IcebergReadInstructions(JObjectWrapper):
 
 class IcebergWriteInstructions(JObjectWrapper):
     """
-    :class:`.IcebergWriteInstructions` provides instructions intended for writing deephaven tables as partitions to Iceberg
+    `IcebergWriteInstructions` provides instructions intended for writing deephaven tables as partitions to Iceberg
     tables.
     """
 
@@ -163,13 +181,13 @@ class IcebergWriteInstructions(JObjectWrapper):
         Args:
             tables (Union[Table, Sequence[Table]]): The deephaven tables to write.
             partition_paths (Optional[Union[str, Sequence[str]]]): The partition paths where each table will be written.
-                For example, if the iceberg table is partitioned by "year" and "month", a partition path could be
+                For example, if the Iceberg table is partitioned by "year" and "month", a partition path could be
                 "year=2021/month=01".
-                If writing to a partitioned iceberg table, users must provide partition path for each table in tables
+                If writing to a partitioned Iceberg table, users must provide partition path for each table in tables
                 argument in the same order.
                 Else when writing to a non-partitioned table, users should not provide any partition paths.
                 Defaults to `None`, which means the deephaven tables will be written to the root data directory of the
-                iceberg table.
+                Iceberg table.
 
         Raises:
             DHError: If unable to build the instructions object.
@@ -203,7 +221,7 @@ class IcebergWriteInstructions(JObjectWrapper):
 
 class SchemaProvider(JObjectWrapper):
     """
-    :class:`.SchemaProvider` is used to extract the schema from an Iceberg table. Users can specify multiple ways to do
+    `SchemaProvider` is used to extract the schema from an Iceberg table. Users can specify multiple ways to do
     so, for example, by schema ID, snapshot ID, current schema, etc. This can be useful for passing a schema when
     writing to an Iceberg table.
     """
@@ -212,10 +230,10 @@ class SchemaProvider(JObjectWrapper):
 
     def __init__(self, _j_object: jpy.JType):
         """
-        Initializes the :class:`.SchemaProvider` object.
+        Initializes the `SchemaProvider` object.
 
         Args:
-            _j_object (SchemaProvider): the Java :class:`.SchemaProvider` object.
+            _j_object (SchemaProvider): the Java `SchemaProvider` object.
         """
         self._j_object = _j_object
 
@@ -229,7 +247,7 @@ class SchemaProvider(JObjectWrapper):
         Used for extracting the current schema from the table.
 
         Returns:
-            the SchemaProvider object.
+            the `SchemaProvider` object.
         """
         return cls(_JSchemaProvider.fromCurrent())
 
@@ -242,7 +260,7 @@ class SchemaProvider(JObjectWrapper):
             schema_id (int): the schema id to use.
 
         Returns:
-            the :class:`.SchemaProvider` object.
+            the `SchemaProvider` object.
         """
         return cls(_JSchemaProvider.fromSchemaId(schema_id))
 
@@ -255,7 +273,7 @@ class SchemaProvider(JObjectWrapper):
             snapshot_id (int): the snapshot id to use.
 
         Returns:
-            the :class:`.SchemaProvider` object.
+            the `SchemaProvider` object.
         """
         return cls(_JSchemaProvider.fromSnapshotId(snapshot_id))
 
@@ -270,9 +288,184 @@ class SchemaProvider(JObjectWrapper):
         return cls(_JSchemaProvider.fromCurrentSnapshot())
 
 
+class SortOrderProvider(JObjectWrapper):
+    """
+    `SortOrderProvider` is used to specify the sort order for new data when writing to an Iceberg table. More details
+    about sort order can be found in the `Iceberg spec <https://iceberg.apache.org/spec/#sorting>`_
+    Users can specify the sort order in multiple ways, such as by providing a sort ID or using the table's default sort
+    order. This class consists of factory methods to create different sort order providers.
+    """
+
+    j_object_type = _JSortOrderProvider
+
+    def __init__(self, _j_object: jpy.JType):
+        """
+        Initializes the `SortOrderProvider` object.
+
+        Args:
+            _j_object (SortOrderProvider): the Java `SortOrderProvider` object.
+        """
+        self._j_object = _j_object
+
+    @property
+    def j_object(self) -> jpy.JType:
+        return self._j_object
+
+    @classmethod
+    def unsorted(cls) -> 'SortOrderProvider':
+        """
+        Used to disable sorting while writing new data to the Iceberg table.
+
+        Returns:
+            the `SortOrderProvider` object.
+        """
+        return cls(_JSortOrderProvider.unsorted())
+
+    @classmethod
+    def use_table_default(cls) -> 'SortOrderProvider':
+        """
+        Use the default sort order of the table while writing new data. If no sort order is set on the table, no sorting
+        will be done.
+
+        Returns:
+            the `SortOrderProvider` object.
+        """
+        return cls(_JSortOrderProvider.useTableDefault())
+
+    @classmethod
+    def from_sort_id(cls, sort_order_id: int) -> 'SortOrderProvider':
+        """
+        Use the sort order with the given ID to sort new data while writing to the Iceberg table.
+
+        Args:
+            sort_order_id (int): the id of the sort order to use.
+
+        Returns:
+            the `.SortOrderProvider` object.
+        """
+        return cls(_JSortOrderProvider.fromSortId(sort_order_id))
+
+    def with_id(self, sort_order_id: int) -> 'SortOrderProvider':
+        """
+        Returns a sort order provider that uses the current provider to determine the columns to sort on, but writes a
+        different sort order ID to the Iceberg table.
+        For example, this provider might sort by columns {A, B, C}, but the ID written to Iceberg corresponds to a sort
+        order with columns {A, B}.
+
+        Args:
+            sort_order_id (int): the sort order ID to write to the Iceberg table.
+
+        Returns:
+            the `SortOrderProvider` object.
+        """
+        return SortOrderProvider(self._j_object.withId(sort_order_id))
+
+    def with_fail_on_unmapped(self, fail_on_unmapped: bool) -> 'SortOrderProvider':
+        """
+        Returns a sort order provider configured to fail (or not) if the sort order cannot be applied to the tables
+        being written. By default, all providers fail if the sort order cannot be applied.
+
+        Args:
+            fail_on_unmapped: whether to fail if the sort order cannot be applied to the tables being written. If
+                `False` and the sort order cannot be applied, the tables will be written without sorting.
+
+        Returns:
+            the `SortOrderProvider` object.
+        """
+        return SortOrderProvider(self._j_object.withFailOnUnmapped(fail_on_unmapped))
+
+
+class InferenceResolver(JObjectWrapper):
+    """
+    This provides a set of inference options for use in :meth:`~IcebergTableAdapter.load_table`. This is useful when the
+    caller does not know the structure of the table to be loaded, and wants the resulting Deephaven Table definition
+    (and mapping to the Iceberg fields) to be inferred.
+    """
+
+    j_object_type = _JInferenceResolver
+
+    def __init__(
+        self,
+        infer_partitioning_columns: bool = False,
+        fail_on_unsupported_types: bool = False,
+        schema_provider: Optional[SchemaProvider] = None,
+    ):
+        """
+        Initializes the `InferenceResolver` object.
+
+        Args:
+            infer_partitioning_columns (bool): if Partitioning column should be inferred based on the latest Iceberg
+                PartitionSpec. By default, is `False`. Warning: inferring partition columns for general-purpose use is
+                dangerous. This is only meant to be applied in situations where caller knows that the latest Iceberg
+                PartitionSpec contains identity transforms that are not expected to ever change.
+            fail_on_unsupported_types (bool): If inference should fail if any of the Iceberg fields fail to map to
+                Deephaven columns. By default, is `False`.
+            schema_provider (Optional[SchemaProvider]): The Iceberg Schema to be used for inference. Defaults to
+                `None`, which means use the current schema from the Iceberg Table.
+        """
+        builder = _JInferenceResolver.builder()
+        builder.inferPartitioningColumns(infer_partitioning_columns)
+        builder.failOnUnsupportedTypes(fail_on_unsupported_types)
+        if schema_provider:
+            builder.schema(schema_provider.j_object)
+        self._j_object = builder.build()
+
+    @property
+    def j_object(self) -> jpy.JType:
+        return self._j_object
+
+
+class UnboundResolver(JObjectWrapper):
+    """
+    This provides a set of resolver options for use in :meth:`~IcebergTableAdapter.load_table`. This is useful when the
+    caller knows the definition of the table they want to load, and can provide an explicit mapping between the
+    Deephaven columns and Iceberg fields.
+    """
+
+    j_object_type = _JUnboundResolver
+
+    def __init__(
+        self,
+        table_definition: TableDefinitionLike,
+        column_instructions: Optional[Mapping[str, Union[int, str]]] = None,
+        schema_provider: Optional[SchemaProvider] = None,
+    ):
+        """
+        Initializes the `UnboundResolver` object.
+
+        Args:
+            table_definition (TableDefinitionLike): the table definition
+            column_instructions (Optional[Mapping[str, Union[int, str]]]): The map from Deephaven column names to
+                instructions for mapping to Iceberg columns. An int value will be treated as a schema field id, and a
+                str value will be treated as a schema field name. Any columns from table_definition not in this map will
+                be assumed as exact name matches for the fields in the Schema. Callers are encouraged to use schema
+                field ids as they will remain valid across Iceberg Schema evolution.
+            schema_provider (Optional[SchemaProvider]): The Iceberg Schema to be used for inference. Defaults to
+                `None`, which means use the current schema from the Iceberg Table.
+        """
+        builder = _JUnboundResolver.builder()
+        builder.definition(TableDefinition(table_definition).j_table_definition)
+        if column_instructions:
+            for column_name, value in column_instructions.items():
+                if isinstance(value, int):
+                    ci = _JColumnInstructions.schemaField(value)
+                elif isinstance(value, str):
+                    ci = _JColumnInstructions.schemaFieldName(value)
+                else:
+                    raise DHError(message="Unexpected value in Mapping")
+                builder.putColumnInstructions(column_name, ci)
+        if schema_provider:
+            builder.schema(schema_provider.j_object)
+        self._j_object = builder.build()
+
+    @property
+    def j_object(self) -> jpy.JType:
+        return self._j_object
+
+
 class TableParquetWriterOptions(JObjectWrapper):
     """
-    :class:`.TableParquetWriterOptions` provides specialized instructions for configuring :class:`.IcebergTableWriter`
+    `TableParquetWriterOptions` provides specialized instructions for configuring `IcebergTableWriter`
     instances.
     """
 
@@ -286,6 +479,7 @@ class TableParquetWriterOptions(JObjectWrapper):
                  maximum_dictionary_keys: Optional[int] = None,
                  maximum_dictionary_size: Optional[int] = None,
                  target_page_size: Optional[int] = None,
+                 sort_order_provider: Optional[SortOrderProvider] = None,
                  data_instructions: Optional[s3.S3Instructions] = None):
         """
         Initializes the instructions using the provided parameters.
@@ -294,10 +488,9 @@ class TableParquetWriterOptions(JObjectWrapper):
             table_definition: TableDefinitionLike: The table definition to use when writing Iceberg data files using
                 this writer instance. This definition can be used to skip some columns or add additional columns with
                 null values. The provided definition should have at least one column.
-            schema_provider: Optional[SchemaProvider]: Used to extract a Schema from a iceberg table. This schema will
+            schema_provider: Optional[SchemaProvider]: Used to extract a Schema from an Iceberg table. This schema will
                 be used in conjunction with the field_id_to_column_name to map Deephaven columns from table_definition
                 to Iceberg columns.
-                Users can specify how to extract the schema in multiple ways (by ID, snapshot ID, initial schema, etc.).
                 Defaults to `None`, which means use the current schema from the table.
             field_id_to_column_name: Optional[Dict[int, str]]: A one-to-one map from Iceberg field IDs from the
                 schema_spec to Deephaven column names from the table_definition.
@@ -313,6 +506,14 @@ class TableParquetWriterOptions(JObjectWrapper):
                 `None`, which means use 2^20 (1,048,576)
             target_page_size (Optional[int]): the target Parquet file page size in bytes, if not specified. Defaults to
                 `None`, which means use 2^20 bytes (1 MiB)
+            sort_order_provider (Optional[SortOrderProvider]): Specifies the sort order to use for sorting new data
+                when writing to an Iceberg table with this writer. The sort order is determined at the time the writer
+                is created and does not change if the table's sort order changes later. Defaults to `None`, which means
+                the table's default sort order is used. More details about sort order can be found in the
+                `Iceberg spec <https://iceberg.apache.org/spec/#sorting>`_
+            data_instructions (Optional[s3.S3Instructions]): Special instructions for writing data files, useful when
+                writing files to a non-local file system, like S3. If omitted, the data instructions will be derived
+                from the catalog.
 
         Raises:
             DHError: If unable to build the object.
@@ -342,6 +543,9 @@ class TableParquetWriterOptions(JObjectWrapper):
             if target_page_size:
                 builder.targetPageSize(target_page_size)
 
+            if sort_order_provider:
+                builder.sortOrderProvider(sort_order_provider.j_object)
+
             if data_instructions:
                 builder.dataInstructions(data_instructions.j_object)
 
@@ -357,7 +561,7 @@ class TableParquetWriterOptions(JObjectWrapper):
 
 class IcebergTable(Table):
     """
-    :class:`.IcebergTable` is a subclass of Table that allows users to dynamically update the table with new snapshots
+    `IcebergTable` is a subclass of Table that allows users to dynamically update the table with new snapshots
     from the Iceberg catalog.
     """
     j_object_type = _JIcebergTable
@@ -396,8 +600,8 @@ class IcebergTable(Table):
 
 class IcebergTableWriter(JObjectWrapper):
     """
-    :class:`.IcebergTableWriter` is responsible for writing Deephaven tables to an Iceberg table. Each
-    :class:`.IcebergTableWriter` instance associated with a single :class:`.IcebergTableAdapter` and can be used to
+    `IcebergTableWriter` is responsible for writing Deephaven tables to an Iceberg table. Each
+    `IcebergTableWriter` instance associated with a single `IcebergTableAdapter` and can be used to
     write multiple Deephaven tables to this Iceberg table.
     """
     j_object_type = _JIcebergTableWriter or type(None)
@@ -412,7 +616,7 @@ class IcebergTableWriter(JObjectWrapper):
         partition paths where each table will be written using the :attr:`.IcebergWriteInstructions.partition_paths`
         parameter.
         This method will not perform any compatibility checks between the existing schema and the provided Deephaven
-        tables. All such checks happen at the time of creation of the :class:`.IcebergTableWriter` instance.
+        tables. All such checks happen at the time of creation of the `IcebergTableWriter` instance.
 
         Args:
             instructions (IcebergWriteInstructions): the customization instructions for write.
@@ -426,7 +630,7 @@ class IcebergTableWriter(JObjectWrapper):
 
 class IcebergTableAdapter(JObjectWrapper):
     """
-    :class:`.IcebergTableAdapter` provides an interface for interacting with Iceberg tables. It allows the user to list
+    `IcebergTableAdapter` provides an interface for interacting with Iceberg tables. It allows the user to list
     snapshots, retrieve table definitions and reading Iceberg tables into Deephaven tables.
     """
     j_object_type = _JIcebergTableAdapter or type(None)
@@ -454,40 +658,67 @@ class IcebergTableAdapter(JObjectWrapper):
         Returns the Deephaven table definition as a Deephaven table.
 
         Args:
-            instructions (Optional[IcebergReadInstructions]): the instructions for reading the table. These instructions
-                can include column renames, table definition, and specific data instructions for reading the data files
-                from the provider. If omitted, the table will be read with default instructions.
+            instructions (Optional[IcebergReadInstructions]): has no effect, deprecated
 
         Returns:
             a table containing the table definition.
         """
 
         if instructions:
-            return Table(self.j_object.definitionTable(instructions.j_object))
+            warn(
+                "The instructions parameter is deprecated, has no effect",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         return Table(self.j_object.definitionTable())
 
-    def table(self, instructions: Optional[IcebergReadInstructions] = None) -> IcebergTable:
+    def table(
+        self,
+        instructions: Optional[IcebergReadInstructions] = None,
+        snapshot_id: Optional[int] = None,
+        update_mode: Optional[IcebergUpdateMode] = None,
+        data_instructions: Optional[s3.S3Instructions] = None,
+        ignore_resolving_errors: bool = False,
+    ) -> IcebergTable:
         """
-        Reads the table using the provided instructions. Optionally, a snapshot id can be provided to read a specific
-        snapshot of the table.
+        Reads the table using the provided instructions.
 
         Args:
-            instructions (Optional[IcebergReadInstructions]): the instructions for reading the table. These instructions
-                can include column renames, table definition, and specific data instructions for reading the data files
-                from the provider. If omitted, the table will be read in `static()` mode without column renames or data
-                instructions.
-
+            instructions (Optional[IcebergReadInstructions]): deprecated, use other parameters directly
+            snapshot_id (Optional[int]): the snapshot id to read; if omitted the most recent snapshot will be selected.
+            update_mode (Optional[IcebergUpdateMode]): The update mode for the table. If omitted, the default update
+                mode of :py:func:`IcebergUpdateMode.static() <IcebergUpdateMode.static>` is used.
+            data_instructions (Optional[s3.S3Instructions]): Special instructions for reading data files, useful when
+                reading files from a non-local file system, like S3. If omitted, the data instructions will be derived
+                from the catalog.
+            ignore_resolving_errors (bool): Controls whether to ignore unexpected resolving errors by silently returning
+                null data for columns that can't be resolved in DataFiles where they should be present. These errors may
+                be a sign of an incorrect resolver or name mapping; or an Iceberg metadata / data issue. By default, is
+                `False`.
         Returns:
             the table read from the catalog.
         """
-
-        if instructions:
-            return IcebergTable(self.j_object.table(instructions.j_object))
-        return IcebergTable(self.j_object.table())
+        if snapshot_id or update_mode or data_instructions or ignore_resolving_errors:
+            instructions = IcebergReadInstructions(
+                snapshot_id=snapshot_id,
+                update_mode=update_mode,
+                data_instructions=data_instructions,
+                ignore_resolving_errors=ignore_resolving_errors,
+            )
+        elif instructions:
+            warn(
+                "instructions on table are deprecated, prefer settings the other parameters",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        else:
+            instructions = IcebergReadInstructions()
+        return IcebergTable(self.j_object.table(instructions.j_object))
 
     def table_writer(self, writer_options: TableParquetWriterOptions) -> IcebergTableWriter:
         """
-        Create a new :class:`.IcebergTableWriter` for this Iceberg table using the provided writer options.
+        Create a new `IcebergTableWriter` for this Iceberg table using the provided writer options.
         This method will perform schema validation to ensure that the provided table definition from the writer options
         is compatible with the Iceberg table schema. All further writes performed by the returned writer will not be
         validated against the table's schema, and thus will be faster.
@@ -507,13 +738,25 @@ class IcebergTableAdapter(JObjectWrapper):
 
 class IcebergCatalogAdapter(JObjectWrapper):
     """
-    :class:`.IcebergCatalogAdapter` provides an interface for interacting with Iceberg catalogs. It allows listing
+    `IcebergCatalogAdapter` provides an interface for interacting with Iceberg catalogs. It allows listing
     namespaces, tables and snapshots, as well as reading Iceberg tables into Deephaven tables.
+
+    Can be used as a context manager:
+    ```
+    with iceberg.adapter(name="MyCatalog", properties={...}) as catalog:
+        t = catalog.load_table("db.tbl").table(update_mode=IcebergUpdateMode.static())
+    ```
     """
     j_object_type = _JIcebergCatalogAdapter or type(None)
 
     def __init__(self, j_object: _JIcebergCatalogAdapter):
         self.j_catalog_adapter = j_object
+
+    def __enter__(self) -> IcebergCatalogAdapter:
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
     def namespaces(self, namespace: Optional[str] = None) -> Table:
         """
@@ -545,18 +788,26 @@ class IcebergCatalogAdapter(JObjectWrapper):
 
         return Table(self.j_object.tables(namespace))
 
-    def load_table(self, table_identifier: str) -> IcebergTableAdapter:
+    def load_table(
+        self,
+        table_identifier: str,
+        resolver: Union[InferenceResolver, UnboundResolver] = None,
+    ) -> IcebergTableAdapter:
         """
         Load the table from the catalog.
 
         Args:
             table_identifier (str): the table to read.
+            resolver (Union[InferenceResolver, UnboundResolver]): the resolver, defaults to None, meaning to use a
+                InferenceResolver with all the default options.
 
         Returns:
             Table: the table read from the catalog.
         """
-
-        return IcebergTableAdapter(self.j_object.loadTable(table_identifier))
+        builder = _JLoadTableOptions.builder()
+        builder.id(table_identifier)
+        builder.resolver((resolver if resolver else InferenceResolver()).j_object)
+        return IcebergTableAdapter(self.j_object.loadTable(builder.build()))
 
     def create_table(self, table_identifier: str, table_definition: TableDefinitionLike) -> IcebergTableAdapter:
         """
@@ -568,11 +819,14 @@ class IcebergCatalogAdapter(JObjectWrapper):
             table_definition (TableDefinitionLike): the table definition of the new table.
 
         Returns:
-            :class:`.IcebergTableAdapter`: the table adapter for the new Iceberg table.
+            `IcebergTableAdapter`: the table adapter for the new Iceberg table.
         """
 
         return IcebergTableAdapter(self.j_object.createTable(table_identifier,
                                                              TableDefinition(table_definition).j_table_definition))
+
+    def close(self):
+        return self.j_object.close()
 
     @property
     def j_object(self) -> jpy.JType:
@@ -589,6 +843,8 @@ def adapter_s3_rest(
         end_point_override: Optional[str] = None
 ) -> IcebergCatalogAdapter:
     """
+    DEPRECATED: Use `adapter()` instead.
+
     Create a catalog adapter using an S3-compatible provider and a REST catalog.
 
     Args:
@@ -608,7 +864,7 @@ def adapter_s3_rest(
             need to set this; it is most useful when connecting to non-AWS, S3-compatible APIs.
 
     Returns:
-        :class:`.IcebergCatalogAdapter`: the catalog adapter for the provided S3 REST catalog.
+        `IcebergCatalogAdapter`: the catalog adapter for the provided S3 REST catalog.
 
     Raises:
         DHError: If unable to build the catalog adapter.
@@ -637,6 +893,8 @@ def adapter_aws_glue(
         name: Optional[str] = None
 ) -> IcebergCatalogAdapter:
     """
+    DEPRECATED: Use `adapter()` instead.
+
     Create a catalog adapter using an AWS Glue catalog.
 
     Args:
@@ -646,7 +904,7 @@ def adapter_aws_glue(
             catalog URI.
 
     Returns:
-        :class:`.IcebergCatalogAdapter`: the catalog adapter for the provided AWS Glue catalog.
+        `IcebergCatalogAdapter`: the catalog adapter for the provided AWS Glue catalog.
 
     Raises:
         DHError: If unable to build the catalog adapter.
@@ -669,7 +927,8 @@ def adapter(
         name: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
         hadoop_config: Optional[Dict[str, str]] = None,
-        s3_instructions: Optional[s3.S3Instructions] = None
+        s3_instructions: Optional[s3.S3Instructions] = None,
+        enable_property_injection: Optional[bool] = True,
 ) -> IcebergCatalogAdapter:
     """
     Create an Iceberg catalog adapter from configuration properties. These properties map to the Iceberg catalog Java
@@ -738,15 +997,32 @@ def adapter(
     Args:
         name (Optional[str]): a descriptive name of the catalog; if omitted the catalog name is inferred from the
             catalog URI property.
-        properties (Optional[Dict[str, str]]): the properties of the catalog to load
-        hadoop_config (Optional[Dict[str, str]]): hadoop configuration properties for the catalog to load
-        s3_instructions (Optional[s3.S3Instructions]): the S3 instructions if applicable
+        properties (Optional[Dict[str, str]]): the properties of the catalog to load. By default, no properties are set.
+        hadoop_config (Optional[Dict[str, str]]): hadoop configuration properties for the catalog to load. By default,
+            no properties are set.
+        s3_instructions (Optional[s3.S3Instructions]): the S3 instructions to use for configuring the Deephaven managed
+            AWS clients. If not provided, the catalog will internally use the Iceberg-managed AWS clients configured
+            using the provided `properties`.
+        enable_property_injection (bool): whether to enable Deephaven’s automatic injection of additional properties
+            that work around upstream issues and supply defaults needed for Deephaven’s Iceberg usage. The injection is
+            strictly additive—any keys already present in `properties` are left unchanged. When set to `False` (not
+            recommended), the property map is forwarded exactly as supplied, with no automatic additions. Defaults to
+            `True`.
+
     Returns:
-        :class:`.IcebergCatalogAdapter`: the catalog adapter created from the provided properties
+    `IcebergCatalogAdapter`: the catalog adapter created from the provided properties
 
     Raises:
         DHError: If unable to build the catalog adapter
     """
+
+    catalog_options = _build_catalog_options(
+        name=name,
+        properties=properties,
+        hadoop_config=hadoop_config,
+        enable_property_injection=enable_property_injection,
+    )
+
     if s3_instructions:
         if not _JIcebergToolsS3:
             raise DHError(
@@ -755,9 +1031,7 @@ def adapter(
         try:
             return IcebergCatalogAdapter(
                 _JIcebergToolsS3.createAdapter(
-                    name,
-                    j_hashmap(properties if properties else {}),
-                    j_hashmap(hadoop_config if hadoop_config else {}),
+                    catalog_options,
                     s3_instructions.j_object,
                 )
             )
@@ -767,10 +1041,30 @@ def adapter(
     try:
         return IcebergCatalogAdapter(
             _JIcebergTools.createAdapter(
-                name,
-                j_hashmap(properties if properties else {}),
-                j_hashmap(hadoop_config if hadoop_config else {}),
+                catalog_options
             )
         )
     except Exception as e:
         raise DHError(e, "Failed to build Iceberg Catalog Adapter") from e
+
+
+def _build_catalog_options(
+        name: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+        hadoop_config: Optional[Dict[str, str]] = None,
+        enable_property_injection: bool = True
+) -> jpy.JType:
+    try:
+        builder = _JBuildCatalogOptions.builder()
+
+        if name:
+            builder.name(name)
+
+        builder.putAllProperties(j_hashmap(properties if properties else {}))
+        builder.putAllHadoopConfig(j_hashmap(hadoop_config  if hadoop_config else {}))
+        builder.enablePropertyInjection(enable_property_injection)
+
+        return builder.build()
+
+    except Exception as e:
+        raise DHError(e, "Failed to build catalog options") from e

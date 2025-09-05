@@ -55,6 +55,27 @@ enum ExtractAnds implements Visitor<Collection<Filter>> {
     }
 
     @Override
+    public Collection<Filter> visit(FilterSerial serial) {
+        return Collections.singleton(serial);
+    }
+
+    @Override
+    public Collection<Filter> visit(FilterBarrier barrier) {
+        // Note that this visitor is not generally recursive; we are always evaluating the top level filter. A top-level
+        // wrapped barrier provides no functionality. We'll unwrap the barrier in the hopeful event that it wraps a
+        // FilterAnd.
+        return barrier.filter().walk(this);
+    }
+
+    @Override
+    public Collection<Filter> visit(FilterRespectsBarrier respectsBarrier) {
+        // Note that this visitor is not generally recursive; we are always evaluating the top level filter. A top-level
+        // wrapped barrier provides no functionality. We'll unwrap the barrier in the hopeful event that it wraps a
+        // FilterAnd.
+        return respectsBarrier.filter().walk(this);
+    }
+
+    @Override
     public Collection<Filter> visit(Function function) {
         return Collections.singleton(function);
     }

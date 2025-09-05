@@ -3,13 +3,16 @@
 #
 import jpy
 
+from unittest.mock import Mock
+
 from deephaven import dtypes
 from deephaven.column import col_def, ColumnType
+from deephaven.experimental.iceberg import IcebergCatalogAdapter
 
 from tests.testbase import BaseTestCase
 from deephaven.experimental import s3, iceberg
 
-from deephaven.jcompat import j_map_to_dict, j_list_to_list
+from deephaven.jcompat import j_list_to_list
 
 _JTableDefinition = jpy.get_type("io.deephaven.engine.table.TableDefinition")
 
@@ -32,47 +35,6 @@ class IcebergTestCase(BaseTestCase):
                                             secret_access_key="som_secret_access_key"
                                             )
         iceberg_read_instructions = iceberg.IcebergReadInstructions(data_instructions=s3_instructions)
-
-    def test_instruction_create_with_col_renames(self):
-        renames = {
-            "old_name_a": "new_name_a",
-            "old_name_b": "new_name_b",
-            "old_name_c": "new_name_c"
-        }
-        iceberg_read_instructions = iceberg.IcebergReadInstructions(column_renames=renames)
-
-        col_rename_dict = j_map_to_dict(iceberg_read_instructions.j_object.columnRenames())
-        self.assertTrue(col_rename_dict["old_name_a"] == "new_name_a")
-        self.assertTrue(col_rename_dict["old_name_b"] == "new_name_b")
-        self.assertTrue(col_rename_dict["old_name_c"] == "new_name_c")
-
-    def test_instruction_create_with_table_definition_dict(self):
-        table_def = {
-            "x": dtypes.int32,
-            "y": dtypes.double,
-            "z": dtypes.double,
-        }
-
-        iceberg_read_instructions = iceberg.IcebergReadInstructions(table_definition=table_def)
-        col_names = j_list_to_list(iceberg_read_instructions.j_object.tableDefinition().get().getColumnNames())
-        self.assertTrue(col_names[0] == "x")
-        self.assertTrue(col_names[1] == "y")
-        self.assertTrue(col_names[2] == "z")
-
-    def test_instruction_create_with_table_definition_list(self):
-        table_def = [
-            col_def("Partition", dtypes.int32, column_type=ColumnType.PARTITIONING),
-            col_def("x", dtypes.int32),
-            col_def("y", dtypes.double),
-            col_def("z", dtypes.double),
-        ]
-
-        iceberg_read_instructions = iceberg.IcebergReadInstructions(table_definition=table_def)
-        col_names = j_list_to_list(iceberg_read_instructions.j_object.tableDefinition().get().getColumnNames())
-        self.assertTrue(col_names[0] == "Partition")
-        self.assertTrue(col_names[1] == "x")
-        self.assertTrue(col_names[2] == "y")
-        self.assertTrue(col_names[3] == "z")
 
     def test_instruction_create_with_snapshot_id(self):
         iceberg_read_instructions = iceberg.IcebergReadInstructions(snapshot_id=12345)
@@ -139,3 +101,94 @@ class IcebergTestCase(BaseTestCase):
         writer_options = iceberg.TableParquetWriterOptions(table_definition={"x": dtypes.int32},
                                                            target_page_size=4096)
         self.assertEqual(writer_options.j_object.targetPageSize(), 4096)
+
+    def test_schema_provider(self):
+        with self.subTest("from_current"):
+            iceberg.SchemaProvider.from_current()
+
+        with self.subTest("from_schema_id"):
+            iceberg.SchemaProvider.from_schema_id(42)
+
+        with self.subTest("from_snapshot_id"):
+            iceberg.SchemaProvider.from_snapshot_id(42)
+
+        with self.subTest("from_current_snapshot"):
+            iceberg.SchemaProvider.from_current_snapshot()
+
+    def test_sort_order_provider(self):
+        with self.subTest("unsorted"):
+            iceberg.SortOrderProvider.unsorted()
+
+        with self.subTest("use_table_default"):
+            iceberg.SortOrderProvider.use_table_default()
+
+        with self.subTest("from_sort_id"):
+            iceberg.SortOrderProvider.from_sort_id(42)
+
+        with self.subTest("with_id"):
+            iceberg.SortOrderProvider.use_table_default().with_id(42)
+
+        with self.subTest("with_fail_on_unmapped"):
+            iceberg.SortOrderProvider.use_table_default().with_fail_on_unmapped(False)
+
+    def test_inference_resolver(self):
+        iceberg.InferenceResolver()
+
+        with self.subTest("infer_partitioning_columns"):
+            iceberg.InferenceResolver(infer_partitioning_columns=False)
+            iceberg.InferenceResolver(infer_partitioning_columns=True)
+
+        with self.subTest("fail_on_unsupported_types"):
+            iceberg.InferenceResolver(fail_on_unsupported_types=False)
+            iceberg.InferenceResolver(fail_on_unsupported_types=True)
+
+        with self.subTest("schema_provider"):
+            iceberg.InferenceResolver(
+                schema_provider=iceberg.SchemaProvider.from_current()
+            )
+            iceberg.InferenceResolver(
+                schema_provider=iceberg.SchemaProvider.from_schema_id(42)
+            )
+
+    def test_unbound_resolver(self):
+        iceberg.UnboundResolver(
+            table_definition={
+                "x": dtypes.int32,
+                "y": dtypes.double,
+                "z": dtypes.double,
+            }
+        )
+        iceberg.UnboundResolver(
+            table_definition=[
+                col_def("Partition", dtypes.int32, column_type=ColumnType.PARTITIONING),
+                col_def("x", dtypes.int32),
+                col_def("y", dtypes.double),
+                col_def("z", dtypes.double),
+            ]
+        )
+        iceberg.UnboundResolver(
+            table_definition={
+                "x": dtypes.int32,
+                "y": dtypes.double,
+                "z": dtypes.double,
+            },
+            column_instructions={"x": 1, "y": "y"},
+            schema_provider=iceberg.SchemaProvider.from_schema_id(99),
+        )
+        iceberg.UnboundResolver(
+            table_definition=[
+                col_def("Partition", dtypes.int32, column_type=ColumnType.PARTITIONING),
+                col_def("x", dtypes.int32),
+                col_def("y", dtypes.double),
+                col_def("z", dtypes.double),
+            ],
+            column_instructions={"Partition": 42, "x": 1, "y": "y"},
+            schema_provider=iceberg.SchemaProvider.from_schema_id(99),
+        )
+
+    def test_catalog_close(self):
+        mock_j = Mock()
+        adapter = IcebergCatalogAdapter(mock_j)
+        with adapter:
+            pass
+        mock_j.close.assert_called_once()

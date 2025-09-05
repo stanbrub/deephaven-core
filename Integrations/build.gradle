@@ -17,6 +17,7 @@ dependencies {
     implementation project(':log-factory')
     implementation project(":util-thread")
     implementation libs.commons.lang3
+    implementation libs.google.findbugs.jsr305
 
     testImplementation project(':engine-test-utils')
     testImplementation project(path: ':Base', configuration: 'tests')
@@ -34,6 +35,8 @@ dependencies {
     testRuntimeOnly project(':extensions-parquet-table')
     testRuntimeOnly project(':log-to-slf4j')
     testRuntimeOnly project(':engine-time')
+    // needed for graphviz JS engine as dot is not present in the container
+    testRuntimeOnly libs.graal.js
 }
 
 sourceSets {

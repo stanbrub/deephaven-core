@@ -4,10 +4,13 @@
 package io.deephaven.extensions.s3;
 
 import com.google.auto.service.AutoService;
+import io.deephaven.util.annotations.InternalUseOnly;
 import io.deephaven.util.channel.SeekableChannelsProvider;
 import io.deephaven.util.channel.SeekableChannelsProviderPlugin;
+import io.deephaven.util.channel.SeekableChannelsProviderPluginBase;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import software.amazon.awssdk.services.s3.S3AsyncClient;
 
 import java.net.URI;
 
@@ -15,7 +18,7 @@ import java.net.URI;
  * {@link SeekableChannelsProviderPlugin} implementation used for reading files from Google Cloud Storage.
  */
 @AutoService(SeekableChannelsProviderPlugin.class)
-public final class GCSSeekableChannelProviderPlugin implements SeekableChannelsProviderPlugin {
+public final class GCSSeekableChannelProviderPlugin extends SeekableChannelsProviderPluginBase {
 
     static final String GCS_URI_SCHEME = "gs";
 
@@ -29,18 +32,41 @@ public final class GCSSeekableChannelProviderPlugin implements SeekableChannelsP
         return GCS_URI_SCHEME.equals(uriScheme);
     }
 
-    @Override
-    public SeekableChannelsProvider createProvider(@NotNull final String uriScheme, @Nullable final Object config) {
-        if (!isCompatible(uriScheme, config)) {
-            throw new IllegalArgumentException("Arguments not compatible, provided uri scheme " + uriScheme);
-        }
-        return new GCSSeekableChannelProvider(s3Instructions(config));
+    /**
+     * Internal API for creating a {@link SeekableChannelsProvider} for reading from and writing to GCS URIs
+     *
+     * @param config The configuration object for the provider.
+     * @param s3AsyncClient The S3 async client to use for the provider.
+     */
+    static SeekableChannelsProvider createGCSSeekableChannelProvider(
+            @Nullable final Object config,
+            @NotNull final S3AsyncClient s3AsyncClient) {
+        final S3SeekableChannelProvider impl =
+                new S3SeekableChannelProvider(normalizeS3Instructions(config), s3AsyncClient);
+        return new S3DelegateProvider(GCS_URI_SCHEME, impl);
     }
 
     /**
-     * Get the S3Instructions from the config object, or use the default if the config is null.
+     * Internal API for creating a {@link SeekableChannelsProvider} for reading from and writing to GCS URIs.
+     *
+     * @param config The configuration object for the provider.
      */
-    private static S3Instructions s3Instructions(@Nullable final Object config) {
+    static SeekableChannelsProvider createGCSSeekableChannelProvider(
+            @Nullable final Object config) {
+        final S3SeekableChannelProvider impl = new S3SeekableChannelProvider(normalizeS3Instructions(config));
+        return new S3DelegateProvider(GCS_URI_SCHEME, impl);
+    }
+
+    @Override
+    protected SeekableChannelsProvider createProviderImpl(@NotNull final String uriScheme,
+            @Nullable final Object config) {
+        return createGCSSeekableChannelProvider(config);
+    }
+
+    /**
+     * Normalize the provided config to ensure valid instructions for reading from GCS.
+     */
+    private static S3Instructions normalizeS3Instructions(@Nullable final Object config) {
         if (config == null) {
             return DEFAULT_INSTRUCTIONS;
         }

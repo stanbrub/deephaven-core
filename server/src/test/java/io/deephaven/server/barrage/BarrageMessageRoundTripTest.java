@@ -20,16 +20,17 @@ import io.deephaven.engine.table.impl.QueryTable;
 import io.deephaven.engine.table.impl.TableUpdateImpl;
 import io.deephaven.engine.table.impl.TableUpdateValidator;
 import io.deephaven.engine.table.impl.util.BarrageMessage;
+import io.deephaven.engine.table.vectors.IntVectorColumnWrapper;
 import io.deephaven.engine.testutil.*;
 import io.deephaven.engine.testutil.generator.*;
 import io.deephaven.engine.testutil.testcase.RefreshingTableTestCase;
 import io.deephaven.engine.updategraph.UpdateSourceCombiner;
 import io.deephaven.engine.util.TableDiff;
 import io.deephaven.engine.util.TableTools;
-import io.deephaven.extensions.barrage.BarrageStreamGenerator;
+import io.deephaven.extensions.barrage.BarrageMessageWriter;
 import io.deephaven.extensions.barrage.BarrageSubscriptionOptions;
 import io.deephaven.extensions.barrage.table.BarrageTable;
-import io.deephaven.extensions.barrage.util.BarrageStreamReader;
+import io.deephaven.extensions.barrage.util.BarrageMessageReaderImpl;
 import io.deephaven.extensions.barrage.util.BarrageUtil;
 import io.deephaven.extensions.barrage.util.ExposedByteArrayOutputStream;
 import io.deephaven.server.arrow.ArrowModule;
@@ -40,6 +41,7 @@ import io.deephaven.test.types.OutOfBandTest;
 import io.deephaven.time.DateTimeUtils;
 import io.deephaven.util.annotations.ReferentialIntegrity;
 import io.deephaven.util.mutable.MutableInt;
+import io.deephaven.vector.IntVector;
 import io.grpc.stub.StreamObserver;
 import junit.framework.TestCase;
 import org.apache.commons.lang3.mutable.MutableObject;
@@ -74,7 +76,7 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
             ArrowModule.class
     })
     public interface TestComponent {
-        BarrageStreamGenerator.Factory getStreamGeneratorFactory();
+        BarrageMessageWriter.Factory getStreamGeneratorFactory();
 
         @Component.Builder
         interface Builder {
@@ -181,9 +183,11 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
             if (sourceTable.isFlat()) {
                 attributes.put(BarrageUtil.TABLE_ATTRIBUTE_IS_FLAT, true);
             }
-            this.barrageTable = BarrageTable.make(updateSourceCombiner,
-                    ExecutionContext.getContext().getUpdateGraph(),
-                    null, barrageMessageProducer.getTableDefinition(), attributes, viewport == null, null);
+            final BarrageUtil.ConvertedArrowSchema schema = BarrageUtil.convertArrowSchema(BarrageUtil.toSchema(
+                    barrageMessageProducer.getTableDefinition(), attributes, sourceTable.isFlat()));
+            this.barrageTable =
+                    BarrageTable.make(null, updateSourceCombiner, ExecutionContext.getContext().getUpdateGraph(),
+                            null, schema, viewport == null, null);
             this.barrageTable.addSourceToRegistrar();
 
             final BarrageSubscriptionOptions options = BarrageSubscriptionOptions.builder()
@@ -192,7 +196,7 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
             final BarrageDataMarshaller marshaller = new BarrageDataMarshaller(
                     options, barrageTable.getWireChunkTypes(), barrageTable.getWireTypes(),
                     barrageTable.getWireComponentTypes(),
-                    new BarrageStreamReader(barrageTable.getDeserializationTmConsumer()));
+                    new BarrageMessageReaderImpl(barrageTable.getDeserializationTmConsumer()));
             this.dummyObserver = new DummyObserver(marshaller, commandQueue);
 
             if (viewport == null) {
@@ -447,6 +451,8 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
             createNuggetsForTableMaker(() -> sourceTable.sort("doubleCol"));
             // test sparse(r) updates
             createNuggetsForTableMaker(() -> sourceTable.where("intCol % 12 < 5"));
+            // test for the nested Vector encoding/decoding (though most types are tested
+            createNuggetsForTableMaker(() -> sourceTable.groupBy("Sym").sort("Sym"));
         }
 
         void runTest(final Runnable simulateSourceStep) {
@@ -1294,8 +1300,9 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
                     new SharedProducerForAllClients(1, 1, size, 0, new MutableInt(MAX_STEPS)) {
                         @Override
                         public void createTable() {
+                            // note we use column name `Sym` instead of `objCol` for the groupBy op in #createNuggets
                             columnInfo = initColumnInfos(
-                                    new String[] {"longCol", "intCol", "objCol", "byteCol", "doubleCol", "floatCol",
+                                    new String[] {"longCol", "intCol", "Sym", "byteCol", "doubleCol", "floatCol",
                                             "shortCol", "charCol", "boolCol", "strArrCol", "datetimeCol",
                                             "bytePrimArray", "intPrimArray"},
                                     new SortedLongGenerator(0, Long.MAX_VALUE - 1),
@@ -1362,8 +1369,9 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
                     new SharedProducerForAllClients(1, 1, size, 0, new MutableInt(MAX_STEPS)) {
                         @Override
                         public void createTable() {
+                            // note we use column name `Sym` instead of `objCol` for the groupBy op in #createNuggets
                             columnInfo = initColumnInfos(
-                                    new String[] {"longCol", "intCol", "objCol", "byteCol", "doubleCol", "floatCol",
+                                    new String[] {"longCol", "intCol", "Sym", "byteCol", "doubleCol", "floatCol",
                                             "shortCol", "charCol", "boolCol", "strCol", "strArrCol", "datetimeCol"},
                                     new SortedLongGenerator(0, Long.MAX_VALUE - 1),
                                     new IntGenerator(10, 100, 0.1),
@@ -1409,7 +1417,79 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
         }
     }
 
-    public static class DummyObserver implements StreamObserver<BarrageStreamGenerator.MessageView> {
+    public void testVectorConcurrentModification() {
+        // this is a regression test for DH-19238; Barrage was not creating a static copy of ColumnWrapped vectors
+        final BitSet allColumns = new BitSet(2);
+        allColumns.set(0, 2);
+
+        final QueryTable queryTable = TstUtils.testRefreshingTable(RowSetFactory.flat(4).toTracking(),
+                col("Sym", "ZVZZT", "ZVZZT", "ZVZZT", "ZVZZT"),
+                col("Val", 1, 1, 1, 1));
+        final RemoteNugget remoteNugget = new RemoteNugget(() -> queryTable.groupBy("Sym"));
+
+        final RemoteClient remoteClient = remoteNugget.newClient(null, allColumns, "client");
+
+        // Obtain snapshot of original table.
+        flushProducerTable();
+        remoteNugget.flushClientEvents();
+        final ControlledUpdateGraph updateGraph = ExecutionContext.getContext().getUpdateGraph().cast();
+        updateGraph.runWithinUnitTestCycle(updateSourceCombiner::run);
+        remoteNugget.validate("original viewport");
+
+        // Let's assert that our column source is virtual (important that the test is capable of failing).
+        Assert.eq(remoteNugget.originalTable.getColumnSource("Val").get(0).getClass(),
+                "remoteNugget.originalTable.getColumnSource(\"Val\").get(0).getClass()",
+                IntVectorColumnWrapper.class);
+
+        // Queue up a change to make Val == 2
+        updateGraph.runWithinUnitTestCycle(() -> {
+            TstUtils.addToTable(queryTable, queryTable.getRowSet(),
+                    col("Sym", "ZVZZT", "ZVZZT", "ZVZZT", "ZVZZT"),
+                    col("Val", 2, 2, 2, 2));
+
+            queryTable.notifyListeners(new TableUpdateImpl(
+                    RowSetFactory.empty(),
+                    RowSetFactory.empty(),
+                    queryTable.getRowSet().copy(),
+                    RowSetShiftData.EMPTY, ModifiedColumnSet.ALL));
+        });
+
+        // Queue up another change, but flush BMP before the table ticks. Client should receive 2's not 3's.
+        updateGraph.runWithinUnitTestCycle(() -> {
+            TstUtils.addToTable(queryTable, queryTable.getRowSet(),
+                    col("Sym", "ZVZZT", "ZVZZT", "ZVZZT", "ZVZZT"),
+                    col("Val", 3, 3, 3, 3));
+
+            flushProducerTable();
+
+            queryTable.notifyListeners(new TableUpdateImpl(
+                    RowSetFactory.empty(),
+                    RowSetFactory.empty(),
+                    queryTable.getRowSet().copy(),
+                    RowSetShiftData.EMPTY, ModifiedColumnSet.ALL));
+        });
+
+        // we're expecting a single update in the queue, flush and propagate to BarrageTable
+        Assert.equals(remoteClient.commandQueue.size(), "remoteClient.getValue().commandQueue.size()", 1);
+        remoteNugget.flushClientEvents();
+        updateGraph.runWithinUnitTestCycle(updateSourceCombiner::run);
+
+        IntVector destVal = (IntVector) remoteClient.barrageTable.getColumnSource("Val").get(0);
+        Assert.neqNull(destVal, "destVal");
+        Assert.eq(destVal.size(), "destVal.size()", queryTable.size(), "queryTable.size()");
+        for (int ii = 0; ii < destVal.size(); ++ii) {
+            Assert.eq(destVal.get(ii), "destVal.get(ii)", 2);
+        }
+
+        // flush bmp and client one last time so we properly cleanup the test's chunks
+        flushProducerTable();
+        Assert.equals(remoteClient.commandQueue.size(), "remoteClient.getValue().commandQueue.size()", 1);
+        remoteNugget.flushClientEvents();
+        updateGraph.runWithinUnitTestCycle(updateSourceCombiner::run);
+        remoteNugget.validate("end-of-test tables should match");
+    }
+
+    public static class DummyObserver implements StreamObserver<BarrageMessageWriter.MessageView> {
         volatile boolean completed = false;
 
         private final BarrageDataMarshaller marshaller;
@@ -1421,7 +1501,7 @@ public class BarrageMessageRoundTripTest extends RefreshingTableTestCase {
         }
 
         @Override
-        public void onNext(final BarrageStreamGenerator.MessageView messageView) {
+        public void onNext(final BarrageMessageWriter.MessageView messageView) {
             try {
                 messageView.forEachStream(inputStream -> {
                     try (final ExposedByteArrayOutputStream baos = new ExposedByteArrayOutputStream()) {

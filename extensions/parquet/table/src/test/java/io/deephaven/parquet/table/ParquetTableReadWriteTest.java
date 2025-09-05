@@ -10,6 +10,7 @@ import io.deephaven.api.SortColumn;
 import io.deephaven.base.FileUtils;
 import io.deephaven.base.verify.Assert;
 import io.deephaven.engine.context.ExecutionContext;
+import io.deephaven.engine.context.QueryScope;
 import io.deephaven.engine.liveness.LivenessScopeStack;
 import io.deephaven.engine.primitive.function.ByteConsumer;
 import io.deephaven.engine.primitive.function.CharConsumer;
@@ -51,6 +52,7 @@ import io.deephaven.parquet.base.BigDecimalParquetBytesCodec;
 import io.deephaven.parquet.base.BigIntegerParquetBytesCodec;
 import io.deephaven.parquet.base.InvalidParquetFileException;
 import io.deephaven.parquet.base.NullStatistics;
+import io.deephaven.parquet.base.materializers.ParquetMaterializerUtils;
 import io.deephaven.parquet.table.location.ParquetTableLocation;
 import io.deephaven.parquet.table.location.ParquetTableLocationKey;
 import io.deephaven.parquet.table.pagestore.ColumnChunkPageStore;
@@ -97,7 +99,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -129,6 +133,7 @@ import static io.deephaven.engine.util.TableTools.merge;
 import static io.deephaven.engine.util.TableTools.newTable;
 import static io.deephaven.engine.util.TableTools.shortCol;
 import static io.deephaven.engine.util.TableTools.stringCol;
+import static io.deephaven.parquet.base.materializers.ParquetMaterializerUtils.MAX_CONVERTIBLE_MILLIS;
 import static io.deephaven.parquet.table.ParquetTableWriter.INDEX_ROW_SET_COLUMN_NAME;
 import static io.deephaven.parquet.table.ParquetTools.readTable;
 import static io.deephaven.parquet.table.ParquetTools.writeKeyValuePartitionedTable;
@@ -445,6 +450,44 @@ public final class ParquetTableReadWriteTest {
         System.gc();
         Assert.eqTrue(DataIndexer.hasDataIndex(child, "symbol"), "hasDataIndex -> symbol");
         Assert.eqTrue(DataIndexer.hasDataIndex(child, "indexed_val"), "hasDataIndex -> indexed_val");
+    }
+
+
+    @Test
+    public void testLazyDataIndex() {
+        testLazyDataIndex(false);
+        testLazyDataIndex(true);
+    }
+
+    private void testLazyDataIndex(final boolean disablePushdown) {
+        final boolean restore = QueryTable.DISABLE_WHERE_PUSHDOWN_DATA_INDEX;
+        try (final SafeCloseable ignored = () -> QueryTable.DISABLE_WHERE_PUSHDOWN_DATA_INDEX = restore) {
+            QueryTable.DISABLE_WHERE_PUSHDOWN_DATA_INDEX = disablePushdown;
+            final String destPath = Path.of(rootFile.getPath(), "ParquetTest_indexRetention_test").toString();
+            final int tableSize = 10_000;
+            QueryScope.addParam("syms", List.of("TSLA", "NVDA", "AAPL", "MSFT"));
+            final Table testTable = TableTools.emptyTable(tableSize).update(
+                    "symbol = randomInt(0,4)",
+                    "indexed_str = (String)syms.get(i % syms.size())",
+                    "sentinel_val = ii");
+            final ParquetInstructions writeInstructions = ParquetInstructions.builder()
+                    .setGenerateMetadataFiles(true)
+                    .addIndexColumns("indexed_str")
+                    .build();
+            final PartitionedTable partitionedTable = testTable.partitionBy("symbol");
+            ParquetTools.writeKeyValuePartitionedTable(partitionedTable, destPath, writeInstructions);
+
+            final Table fromDisk = ParquetTools.readTable(destPath);
+            final Table filtered = fromDisk.where("indexed_str icase in `nvDa`");
+            final Table inMemory = fromDisk.select("symbol", "indexed_str=indexed_str.toUpperCase()", "sentinel_val")
+                    .where("indexed_str in `NVDA`");
+            assertTableEquals(inMemory, filtered);
+
+            final Table filtered2 = fromDisk.where("indexed_str icase in `Aapl`, `nvda`");
+            final Table inMemory2 = fromDisk.select("symbol", "indexed_str=indexed_str.toUpperCase()", "sentinel_val")
+                    .where("indexed_str in `AAPL`, `NVDA`");
+            assertTableEquals(inMemory2, filtered2);
+        }
     }
 
     @Test
@@ -1557,6 +1600,87 @@ public final class ParquetTableReadWriteTest {
     }
 
     @Test
+    public void testWritingPartitionedDatasetWithIndexOnPartitioningColumn() {
+        final TableDefinition definition = TableDefinition.of(
+                ColumnDefinition.ofInt("PC1").withPartitioning(),
+                ColumnDefinition.ofInt("PC2").withPartitioning(),
+                ColumnDefinition.ofLong("I"));
+        final Table inputData = TableTools.emptyTable(10)
+                .update("PC1 = (ii%2==0)? null : (int)(ii%2)",
+                        "PC2 = (int)(ii%3)",
+                        "I = ii");
+        final File parentDir = new File(rootFile, "writeKeyValuePartitionedDataWithIndexOnPC");
+        final ParquetInstructions instructionsWithIndexOnPC = ParquetInstructions.builder()
+                .setTableDefinition(definition)
+                .addIndexColumns("PC1") // Adding index on partitioning column
+                .build();
+
+        try {
+            writeKeyValuePartitionedTable(inputData, parentDir.getAbsolutePath(), instructionsWithIndexOnPC);
+            fail("Expected exception when adding index on partitioning column");
+        } catch (final IllegalArgumentException exception) {
+            assertTrue(exception.getMessage().contains("Cannot add index on partitioning column"));
+        }
+        try {
+            writeKeyValuePartitionedTable(
+                    inputData.partitionBy("PC1"), parentDir.getAbsolutePath(), instructionsWithIndexOnPC);
+            fail("Expected exception when adding index on partitioning column");
+        } catch (final IllegalArgumentException exception) {
+            assertTrue(exception.getMessage().contains("Cannot add index on partitioning column"));
+        }
+
+        // Add a data index on a partitioning column
+        DataIndexer.getOrCreateDataIndex(inputData, "PC1");
+        writeKeyValuePartitionedTable(inputData, parentDir.getAbsolutePath(), ParquetInstructions.builder()
+                .setTableDefinition(definition)
+                .setBaseNameForPartitionedParquetData("data")
+                .build());
+
+        // Make sure we didn't write the index
+        final File parquetDataDir = new File(parentDir, "PC1=1/PC2=1");
+        verifyFilesInDir(parquetDataDir, new String[] {"data.parquet"}, null);
+
+        final Table fromDisk = readTable(parentDir.getPath());
+
+        // Make sure an index is present on the partitioning column, which will be the partitioning index
+        verifyIndexingInfoExists(fromDisk, "PC1");
+        verifyIndexingInfoExists(fromDisk, "PC2");
+
+        // Make sure the data is read correctly
+        assertEquals(definition, fromDisk.getDefinition());
+        assertTableEquals(inputData.sort("PC1", "PC2"), fromDisk.sort("PC1", "PC2"));
+    }
+
+    @Test
+    public void testReadingPartitionedDatasetWithIndexOnPartitioningColumn() {
+        final TableDefinition expectedDefinition = TableDefinition.of(
+                ColumnDefinition.ofInt("PC1").withPartitioning(),
+                ColumnDefinition.ofInt("PC2").withPartitioning(),
+                ColumnDefinition.ofLong("I"));
+        final Table expectedValues = TableTools.emptyTable(10)
+                .update("PC1 = (ii%2==0)? null : (int)(ii%2)",
+                        "PC2 = (int)(ii%3)",
+                        "I = ii");
+        final String parentDir =
+                ParquetTableReadWriteTest.class.getResource("/referencePartitionedDataWithIndexOnPC").getFile();
+        final File parquetDataDir = new File(parentDir, "PC1=1/PC2=1");
+        final String pc1IndexFilePath = ".dh_metadata/indexes/PC1/index_PC1_data.parquet";
+        final String pc2IndexFilePath = ".dh_metadata/indexes/PC2/index_PC2_data.parquet";
+        verifyFilesInDir(parquetDataDir, new String[] {"data.parquet"},
+                Map.of("PC1", new String[] {pc1IndexFilePath},
+                        "PC2", new String[] {pc2IndexFilePath}));
+
+        final Table fromDisk = readTable(parentDir);
+        // Make sure an index is present on the partitioning column, which will be the partitioning index
+        verifyIndexingInfoExists(fromDisk, "PC1");
+        verifyIndexingInfoExists(fromDisk, "PC2");
+
+        // Make sure the data is read correctly
+        assertEquals(expectedDefinition, fromDisk.getDefinition());
+        assertTableEquals(expectedValues.sort("PC1", "PC2"), fromDisk.sort("PC1", "PC2"));
+    }
+
+    @Test
     public void someMoreKeyValuePartitionedTestsWithComplexKeys() {
         // Verify complex keys both with and without data index
         someMoreKeyValuePartitionedTestsWithComplexKeysHelper(true);
@@ -1846,6 +1970,91 @@ public final class ParquetTableReadWriteTest {
             assertTableEquals(expected.sort("PC1"), fromDiskWithMetadata.sort("PC1"));
             FileUtils.deleteRecursively(parentDir);
         }
+    }
+
+    private static Instant epochMicrosToInstant(final long micros) {
+        return Instant.ofEpochSecond(micros / 1000000L, micros % 1000000L * 1000L);
+    }
+
+    private static Instant epochMillisToInstant(final long millis) {
+        return Instant.ofEpochMilli(millis);
+    }
+
+    /**
+     * This test verified how Deephaven handles DH Null sentinel values in timestamps and dates when reading from
+     * Parquet files.
+     *
+     * <pre>
+     * import pyarrow as pa
+     * import pyarrow.parquet as pq
+     * import numpy as np
+     *
+     * # Deephaven “null” sentinels
+     * NULL_LONG = -0x8000000000000000
+     * NULL_INT  = np.int32(-0x80000000)
+     *
+     * MAX_LONG      = 0x7fffffffffffffff
+     * MAX_CONVERTIBLE_MICROS   =  MAX_LONG // 1_000
+     * MIN_CONVERTIBLE_MICROS   = -MAX_CONVERTIBLE_MICROS
+     * MAX_CONVERTIBLE_MILLIS   =  MAX_LONG // 1_000_000
+     * MIN_CONVERTIBLE_MILLIS   = -MAX_CONVERTIBLE_MILLIS
+     *
+     * arrays = [
+     *     pa.array([NULL_LONG], type=pa.timestamp('ms', tz='UTC')),  # timestamps_ms_null
+     *     pa.array([MAX_CONVERTIBLE_MILLIS], type=pa.timestamp('ms', tz='UTC')), # timestamps_ms_max
+     *     pa.array([MIN_CONVERTIBLE_MILLIS], type=pa.timestamp('ms', tz='UTC')), # timestamps_ms_min
+     *
+     *     pa.array([NULL_LONG],  type=pa.timestamp('us', tz='UTC')), # timestamps_us_null
+     *     pa.array([MAX_CONVERTIBLE_MICROS], type=pa.timestamp('us', tz='UTC')), # timestamps_us_max
+     *     pa.array([MIN_CONVERTIBLE_MICROS], type=pa.timestamp('us', tz='UTC')), # timestamps_us_min
+     *
+     *     pa.array([NULL_LONG],  type=pa.timestamp('ns', tz='UTC')), # timestamps_ns_null
+     *
+     *     pa.array([NULL_INT],   type=pa.date32()),                  # date_null
+     * ]
+     *
+     * names = [
+     *     "timestamps_ms_null",   "timestamps_ms_max",   "timestamps_ms_min",
+     *     "timestamps_us_null",   "timestamps_us_max",   "timestamps_us_min",
+     *     "timestamps_ns_null",
+     *     "date_null"
+     * ]
+     *
+     * table = pa.Table.from_arrays(arrays, names=names)
+     * pq.write_table(table, "ReferenceDHNullTimestamp.parquet")
+     * </pre>
+     */
+    @Test
+    public void testReadingDeephavenNullsForTimestamp() {
+        final String path =
+                ParquetTableReadWriteTest.class.getResource("/ReferenceDHNullTimestamp.parquet").getFile();
+        final Table fromDisk = readTable(path, EMPTY.withLayout(ParquetInstructions.ParquetFileLayout.SINGLE_FILE));
+        {
+            try {
+                fromDisk.getColumnSource("timestamps_ms_null").get(0);
+                fail("Expected exception for because DH cannot represent NULL_LONG as a timestamp in millis");
+            } catch (final UncheckedDeephavenException e) {
+                assertTrue(e.getCause().getMessage().contains("millis to nanos would overflow"));
+            }
+            assertEquals(epochMillisToInstant(MAX_CONVERTIBLE_MILLIS),
+                    fromDisk.getColumnSource("timestamps_ms_max").get(0));
+            assertEquals(epochMillisToInstant(-MAX_CONVERTIBLE_MILLIS),
+                    fromDisk.getColumnSource("timestamps_ms_min").get(0));
+        }
+        {
+            try {
+                fromDisk.getColumnSource("timestamps_us_null").get(0);
+                fail("Expected exception for because DH cannot represent NULL_LONG as a timestamp in millis");
+            } catch (final UncheckedDeephavenException e) {
+                assertTrue(e.getCause().getMessage().contains("micros to nanos would overflow"));
+            }
+            assertEquals(epochMicrosToInstant(ParquetMaterializerUtils.MAX_CONVERTIBLE_MICROS),
+                    fromDisk.getColumnSource("timestamps_us_max").get(0));
+            assertEquals(epochMicrosToInstant(-ParquetMaterializerUtils.MAX_CONVERTIBLE_MICROS),
+                    fromDisk.getColumnSource("timestamps_us_min").get(0));
+        }
+        assertEquals(null, fromDisk.getColumnSource("timestamps_ns_null").get(0));
+        assertEquals(LocalDate.ofEpochDay(NULL_INT), fromDisk.getColumnSource("date_null").get(0));
     }
 
     @Test

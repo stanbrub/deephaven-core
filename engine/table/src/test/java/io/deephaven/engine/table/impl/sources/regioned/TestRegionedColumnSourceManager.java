@@ -118,18 +118,18 @@ public class TestRegionedColumnSourceManager extends RefreshingTableTestCase {
 
         checking(new Expectations() {
             {
-                oneOf(componentFactory).createRegionedColumnSource(with(same(partitioningColumnDefinition)),
-                        with(ColumnToCodecMappings.EMPTY));
+                oneOf(componentFactory).createRegionedColumnSource(with(any(RegionedColumnSourceManager.class)),
+                        with(same(partitioningColumnDefinition)), with(ColumnToCodecMappings.EMPTY));
                 will(returnValue(partitioningColumnSource));
                 allowing(partitioningColumnSource).getType();
                 will(returnValue(partitioningColumnDefinition.getDataType()));
                 allowing(partitioningColumnSource).getComponentType();
                 will(returnValue(partitioningColumnDefinition.getComponentType()));
-                oneOf(componentFactory).createRegionedColumnSource(with(same(groupingColumnDefinition)),
-                        with(ColumnToCodecMappings.EMPTY));
+                oneOf(componentFactory).createRegionedColumnSource(with(any(RegionedColumnSourceManager.class)),
+                        with(same(groupingColumnDefinition)), with(ColumnToCodecMappings.EMPTY));
                 will(returnValue(groupingColumnSource));
-                oneOf(componentFactory).createRegionedColumnSource(with(same(normalColumnDefinition)),
-                        with(ColumnToCodecMappings.EMPTY));
+                oneOf(componentFactory).createRegionedColumnSource(with(any(RegionedColumnSourceManager.class)),
+                        with(same(normalColumnDefinition)), with(ColumnToCodecMappings.EMPTY));
                 will(returnValue(normalColumnSource));
             }
         });
@@ -397,7 +397,8 @@ public class TestRegionedColumnSourceManager extends RefreshingTableTestCase {
     }
 
     private void testStaticBasics(final DataIndexOptions options) {
-        SUT = new RegionedColumnSourceManager(false, componentFactory, ColumnToCodecMappings.EMPTY, columnDefinitions);
+        SUT = new RegionedColumnSourceManager(false, false, componentFactory, ColumnToCodecMappings.EMPTY,
+                columnDefinitions);
         assertEquals(makeColumnSourceMap(), SUT.getColumnSources());
 
         assertTrue(SUT.isEmpty());
@@ -507,7 +508,8 @@ public class TestRegionedColumnSourceManager extends RefreshingTableTestCase {
 
     @Test
     public void testStaticOverflow() {
-        SUT = new RegionedColumnSourceManager(false, componentFactory, ColumnToCodecMappings.EMPTY, columnDefinitions);
+        SUT = new RegionedColumnSourceManager(false, false, componentFactory, ColumnToCodecMappings.EMPTY,
+                columnDefinitions);
 
         // Add a location
         SUT.addLocation(tableLocation0A);
@@ -532,7 +534,8 @@ public class TestRegionedColumnSourceManager extends RefreshingTableTestCase {
 
     @Test
     public void testRefreshing() {
-        SUT = new RegionedColumnSourceManager(true, componentFactory, ColumnToCodecMappings.EMPTY, columnDefinitions);
+        SUT = new RegionedColumnSourceManager(true, false, componentFactory, ColumnToCodecMappings.EMPTY,
+                columnDefinitions);
         assertEquals(makeColumnSourceMap(), SUT.getColumnSources());
 
         assertTrue(SUT.isEmpty());

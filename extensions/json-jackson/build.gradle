@@ -29,9 +29,15 @@ dependencies {
     testImplementation libs.assertj
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
+    testRuntimeOnly libs.junit.platform.launcher
 
     testImplementation platform(libs.jackson.bom)
     testImplementation libs.jackson.databind
+
+    testRuntimeOnly project(':log-to-slf4j')
+    testRuntimeOnly project(':configs')
+    testRuntimeOnly project(':test-configs')
+    testRuntimeOnly libs.slf4j.simple
 }
 
 test {

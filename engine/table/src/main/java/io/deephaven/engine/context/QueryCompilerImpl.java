@@ -41,7 +41,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -113,13 +112,18 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
     public static final String DYNAMIC_CLASS_PREFIX = "io.deephaven.dynamic";
 
     public static QueryCompilerImpl create(File cacheDirectory, ClassLoader classLoader) {
-        return new QueryCompilerImpl(cacheDirectory, classLoader, true);
+        return new QueryCompilerImpl(cacheDirectory, classLoader, true, null);
     }
 
     static QueryCompilerImpl createForUnitTests() {
+        return createForUnitTests(null);
+    }
+
+    static QueryCompilerImpl createForUnitTests(final List<String> classNamesForAnnotationProcessing) {
         final Path queryCompilerDir = DataDir.get()
                 .resolve("io.deephaven.engine.context.QueryCompiler.createForUnitTests");
-        return new QueryCompilerImpl(queryCompilerDir.toFile(), QueryCompilerImpl.class.getClassLoader(), false);
+        return new QueryCompilerImpl(queryCompilerDir.toFile(), QueryCompilerImpl.class.getClassLoader(), false,
+                classNamesForAnnotationProcessing);
     }
 
     private final Map<String, CompletionStageFuture<Class<?>>> knownClasses = new HashMap<>();
@@ -129,11 +133,14 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
     private final File classDestination;
     private final Set<File> additionalClassLocations;
     private final WritableURLClassLoader ucl;
+    // This is for test use only, specifying a non-null list causes an error without a specific source to be generated.
+    private final List<String> classNamesForAnnotationProcessing;
 
     private QueryCompilerImpl(
             @NotNull final File classDestination,
             @NotNull final ClassLoader parentClassLoader,
-            boolean classDestinationIsAlsoClassSource) {
+            boolean classDestinationIsAlsoClassSource,
+            final List<String> classNamesForAnnotationProcessing) {
         ensureJavaCompiler();
 
         this.classDestination = classDestination;
@@ -152,6 +159,8 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
         if (classDestinationIsAlsoClassSource) {
             addClassSource(classDestination);
         }
+
+        this.classNamesForAnnotationProcessing = classNamesForAnnotationProcessing;
     }
 
     @Override
@@ -596,7 +605,9 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
 
                 // However, regardless of A-C, there will be *some* class being found
                 if (clazz == null) {
-                    throw new IllegalStateException("Should have been able to load *some* class here");
+                    throw new IllegalStateException("Unable to load class after delay of " + CODEGEN_TIMEOUT_MS
+                            + ".  state index=" + ii + ", fqClassName=" + state.fqClassName + ", parameterClasses"
+                            + request.parameterClasses() + ", destination=" + getClassDestination().getAbsolutePath());
                 }
 
                 if (completeIfResultMatchesQueryCompilerRequest(state.packageName, request, resolver, clazz)) {
@@ -656,8 +667,13 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
     }
 
     private static String makeFinalCode(String className, String classBody, String packageName) {
+        if (classBody.contains("$CLASSNAME$")) {
+            throw new IllegalArgumentException("QueryCompiler's support of the $CLASSNAME$ variable has been removed as"
+                    + " the final class name affects the compiled byte code and therefore cannot be dynamically "
+                    + "replaced.");
+        }
+
         final String joinedEscapedBody = createEscapedJoinedString(classBody);
-        classBody = classBody.replaceAll("\\$CLASSNAME\\$", className);
         classBody = classBody.substring(0, classBody.lastIndexOf("}"));
         classBody += "    public static String " + IDENTIFYING_FIELD_NAME + " = " + joinedEscapedBody + ";\n}";
         return "package " + packageName + ";\n" + classBody;
@@ -845,16 +861,10 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
             jobScheduler = new OperationInitializerJobScheduler();
         }
 
-        final AtomicBoolean cleanupAlreadyRun = new AtomicBoolean();
         final JavaFileManager fileManager = acquireFileManager();
         final AtomicReference<RuntimeException> exception = new AtomicReference<>();
         final CountDownLatch latch = new CountDownLatch(1);
         final Runnable cleanup = () -> {
-            if (!cleanupAlreadyRun.compareAndSet(false, true)) {
-                // onError could be run after cleanup if cleanup throws an exception
-                return;
-            }
-
             try {
                 try {
                     FileUtils.deleteRecursively(new File(tempDirAsString));
@@ -886,7 +896,11 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
                     final int endExclusive = Math.min(requests.size(), (jobId + 1) * requestsPerTask);
                     doCreateClasses(
                             fileManager, requests, rootPathAsString, tempDirAsString, startInclusive, endExclusive);
-                }, cleanup, onError);
+                },
+                () -> {
+                },
+                cleanup,
+                onError);
 
         try {
             latch.await();
@@ -947,6 +961,7 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
                 "--should-stop=ifError=GENERATE");
 
         final MutableInt numFailures = new MutableInt(0);
+        final List<RuntimeException> globalFailures = new ArrayList<>();
         compiler.getTask(compilerOutput,
                 fileManager,
                 diagnostic -> {
@@ -955,6 +970,16 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
                     }
 
                     final JavaSourceFromString source = (JavaSourceFromString) diagnostic.getSource();
+
+                    if (source == null) {
+                        // If we have no source, then mark every request as a failure.
+                        final UncheckedDeephavenException err = new UncheckedDeephavenException(
+                                "Error Invoking Compiler, no source present in diagnostic:\n"
+                                        + diagnostic.getMessage(Locale.getDefault()));
+                        globalFailures.add(err);
+                        return;
+                    }
+
                     final UncheckedDeephavenException err = new UncheckedDeephavenException("Error Compiling "
                             + source.description + "\n" + diagnostic.getMessage(Locale.getDefault()));
                     if (source.resolver.completeExceptionally(err)) {
@@ -963,11 +988,19 @@ public class QueryCompilerImpl implements QueryCompiler, LogOutputAppendable {
                     }
                 },
                 compilerOptions,
-                null,
+                classNamesForAnnotationProcessing,
                 requests.subList(startInclusive, endExclusive).stream()
                         .map(CompilationRequestAttempt::makeSource)
                         .collect(Collectors.toList()))
                 .call();
+
+        if (!globalFailures.isEmpty()) {
+            final RuntimeException e0 = globalFailures.get(0);
+            for (int ii = 1; ii < globalFailures.size(); ++ii) {
+                e0.addSuppressed(globalFailures.get(ii));
+            }
+            throw e0;
+        }
 
         final boolean wantRetry = numFailures.get() > 0 && numFailures.get() != endExclusive - startInclusive;
 

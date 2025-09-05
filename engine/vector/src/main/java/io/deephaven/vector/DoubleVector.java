@@ -7,12 +7,16 @@
 // @formatter:off
 package io.deephaven.vector;
 
+import io.deephaven.util.compare.DoubleComparisons;
+
 import io.deephaven.base.verify.Require;
 import io.deephaven.engine.primitive.iterator.CloseablePrimitiveIteratorOfDouble;
+import io.deephaven.engine.primitive.value.iterator.ValueIteratorOfDouble;
 import io.deephaven.qst.type.DoubleType;
 import io.deephaven.qst.type.PrimitiveVectorType;
 import io.deephaven.util.QueryConstants;
 import io.deephaven.util.annotations.FinalDefault;
+import io.deephaven.util.compare.DoubleComparisons;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -55,7 +59,7 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
 
     @Override
     @FinalDefault
-    default CloseablePrimitiveIteratorOfDouble iterator() {
+    default ValueIteratorOfDouble iterator() {
         return iterator(0, size());
     }
 
@@ -67,9 +71,9 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
      * @param toIndexExclusive The first position after {@code fromIndexInclusive} to not include
      * @return An iterator over the requested slice
      */
-    default CloseablePrimitiveIteratorOfDouble iterator(final long fromIndexInclusive, final long toIndexExclusive) {
+    default ValueIteratorOfDouble iterator(final long fromIndexInclusive, final long toIndexExclusive) {
         Require.leq(fromIndexInclusive, "fromIndexInclusive", toIndexExclusive, "toIndexExclusive");
-        return new CloseablePrimitiveIteratorOfDouble() {
+        return new ValueIteratorOfDouble() {
 
             long nextIndex = fromIndexInclusive;
 
@@ -81,6 +85,11 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
             @Override
             public boolean hasNext() {
                 return nextIndex < toIndexExclusive;
+            }
+
+            @Override
+            public long remaining() {
+                return toIndexExclusive - nextIndex;
             }
         };
     }
@@ -95,6 +104,22 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
     @FinalDefault
     default String toString(final int prefixLength) {
         return toString(this, prefixLength);
+    }
+
+    /**
+     * <p>
+     * Compare this vector with another vector.
+     * </p>
+     *
+     * <p>
+     * The vectors are ordered lexicographically using Deephaven sorting rules.
+     * </p>
+     *
+     * {@see Comparable#compareTo}
+     */
+    @Override
+    default int compareTo(final DoubleVector o) {
+        return compareTo(this, o);
     }
 
     static String doubleValToString(final Object val) {
@@ -157,13 +182,44 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
                 final CloseablePrimitiveIteratorOfDouble bIterator = bVector.iterator()) {
             while (aIterator.hasNext()) {
                 // region ElementEquals
-                if (Double.doubleToLongBits(aIterator.nextDouble()) != Double.doubleToLongBits(bIterator.nextDouble())) {
+                if (!DoubleComparisons.eq(aIterator.nextDouble(), bIterator.nextDouble())) {
                     return false;
                 }
                 // endregion ElementEquals
             }
         }
         return true;
+    }
+
+    /**
+     * Helper method for {@link Comparable#compareTo(Object)} for a generic DoubleVector.
+     * 
+     * @param aVector the first vector (this in compareTo)
+     * @param bVector the second vector ("o" or other in compareTo)
+     * @return -1, 0, or 1 if aVector is less than, equal to, or greater than bVector (respectively)
+     */
+    static int compareTo(final DoubleVector aVector, final DoubleVector bVector) {
+        if (aVector == bVector) {
+            return 0;
+        }
+        try (final CloseablePrimitiveIteratorOfDouble aIterator = aVector.iterator();
+                final CloseablePrimitiveIteratorOfDouble bIterator = bVector.iterator()) {
+            while (aIterator.hasNext()) {
+                if (!bIterator.hasNext()) {
+                    return 1;
+                }
+                final double aValue = aIterator.nextDouble();
+                final double bValue = bIterator.nextDouble();
+                final int compare = DoubleComparisons.compare(aValue, bValue);
+                if (compare != 0) {
+                    return compare;
+                }
+            }
+            if (bIterator.hasNext()) {
+                return -1;
+            }
+        }
+        return 0;
     }
 
     /**
@@ -179,7 +235,9 @@ public interface DoubleVector extends Vector<DoubleVector>, Iterable<Double> {
         }
         try (final CloseablePrimitiveIteratorOfDouble iterator = vector.iterator()) {
             while (iterator.hasNext()) {
-                result = 31 * result + Double.hashCode(iterator.nextDouble());
+                // region ElementHash
+                result = 31 * result + DoubleComparisons.hashCode(iterator.nextDouble());
+                // endregion ElementHash
             }
         }
         return result;

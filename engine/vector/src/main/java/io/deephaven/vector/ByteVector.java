@@ -9,10 +9,12 @@ package io.deephaven.vector;
 
 import io.deephaven.base.verify.Require;
 import io.deephaven.engine.primitive.iterator.CloseablePrimitiveIteratorOfByte;
+import io.deephaven.engine.primitive.value.iterator.ValueIteratorOfByte;
 import io.deephaven.qst.type.ByteType;
 import io.deephaven.qst.type.PrimitiveVectorType;
 import io.deephaven.util.QueryConstants;
 import io.deephaven.util.annotations.FinalDefault;
+import io.deephaven.util.compare.ByteComparisons;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -55,7 +57,7 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
 
     @Override
     @FinalDefault
-    default CloseablePrimitiveIteratorOfByte iterator() {
+    default ValueIteratorOfByte iterator() {
         return iterator(0, size());
     }
 
@@ -67,9 +69,9 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
      * @param toIndexExclusive The first position after {@code fromIndexInclusive} to not include
      * @return An iterator over the requested slice
      */
-    default CloseablePrimitiveIteratorOfByte iterator(final long fromIndexInclusive, final long toIndexExclusive) {
+    default ValueIteratorOfByte iterator(final long fromIndexInclusive, final long toIndexExclusive) {
         Require.leq(fromIndexInclusive, "fromIndexInclusive", toIndexExclusive, "toIndexExclusive");
-        return new CloseablePrimitiveIteratorOfByte() {
+        return new ValueIteratorOfByte() {
 
             long nextIndex = fromIndexInclusive;
 
@@ -81,6 +83,11 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
             @Override
             public boolean hasNext() {
                 return nextIndex < toIndexExclusive;
+            }
+
+            @Override
+            public long remaining() {
+                return toIndexExclusive - nextIndex;
             }
         };
     }
@@ -95,6 +102,22 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
     @FinalDefault
     default String toString(final int prefixLength) {
         return toString(this, prefixLength);
+    }
+
+    /**
+     * <p>
+     * Compare this vector with another vector.
+     * </p>
+     *
+     * <p>
+     * The vectors are ordered lexicographically using Deephaven sorting rules.
+     * </p>
+     *
+     * {@see Comparable#compareTo}
+     */
+    @Override
+    default int compareTo(final ByteVector o) {
+        return compareTo(this, o);
     }
 
     static String byteValToString(final Object val) {
@@ -167,6 +190,37 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
     }
 
     /**
+     * Helper method for {@link Comparable#compareTo(Object)} for a generic ByteVector.
+     * 
+     * @param aVector the first vector (this in compareTo)
+     * @param bVector the second vector ("o" or other in compareTo)
+     * @return -1, 0, or 1 if aVector is less than, equal to, or greater than bVector (respectively)
+     */
+    static int compareTo(final ByteVector aVector, final ByteVector bVector) {
+        if (aVector == bVector) {
+            return 0;
+        }
+        try (final CloseablePrimitiveIteratorOfByte aIterator = aVector.iterator();
+                final CloseablePrimitiveIteratorOfByte bIterator = bVector.iterator()) {
+            while (aIterator.hasNext()) {
+                if (!bIterator.hasNext()) {
+                    return 1;
+                }
+                final byte aValue = aIterator.nextByte();
+                final byte bValue = bIterator.nextByte();
+                final int compare = ByteComparisons.compare(aValue, bValue);
+                if (compare != 0) {
+                    return compare;
+                }
+            }
+            if (bIterator.hasNext()) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Helper method for implementing {@link Object#hashCode()}. Follows the pattern in {@link Arrays#hashCode(byte[])}.
      *
      * @param vector The ByteVector to hash
@@ -179,7 +233,9 @@ public interface ByteVector extends Vector<ByteVector>, Iterable<Byte> {
         }
         try (final CloseablePrimitiveIteratorOfByte iterator = vector.iterator()) {
             while (iterator.hasNext()) {
+                // region ElementHash
                 result = 31 * result + Byte.hashCode(iterator.nextByte());
+                // endregion ElementHash
             }
         }
         return result;

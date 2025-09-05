@@ -22,6 +22,7 @@ set(ALL_FILES
     src/column/column_source.cc
     src/column/column_source_helpers.cc
     src/column/column_source_utils.cc
+    src/container/container.cc
     src/container/row_sequence.cc
     src/immerutil/abstract_flex_vector.cc
     src/immerutil/immer_column_source.cc
@@ -54,6 +55,9 @@ set(ALL_FILES
     include/public/deephaven/dhcore/column/column_source.h
     include/public/deephaven/dhcore/column/column_source_helpers.h
     include/public/deephaven/dhcore/column/column_source_utils.h
+    include/public/deephaven/dhcore/column/container_column_source.h
+    include/public/deephaven/dhcore/container/container.h
+    include/public/deephaven/dhcore/container/container_util.h
     include/public/deephaven/dhcore/container/row_sequence.h
     include/public/deephaven/dhcore/interop/testapi/basic_interop_interactions.h
     include/public/deephaven/dhcore/interop/interop_util.h
@@ -62,6 +66,7 @@ set(ALL_FILES
     include/public/deephaven/dhcore/ticking/ticking.h
     include/public/deephaven/dhcore/utility/cython_support.h
     include/public/deephaven/dhcore/utility/utility.h
+    include/public/deephaven/dhcore/utility/time.h
 
     flatbuf/deephaven/flatbuf/Barrage_generated.h
 
@@ -131,13 +136,13 @@ foreach (whichlib dhcore dhcore_static)
   set_property(TARGET ${whichlib} PROPERTY POSITION_INDEPENDENT_CODE ON)
 
   if (LINUX)
-    target_compile_options(${whichlib} PRIVATE -Wall -Werror -Wno-deprecated-declarations)
+    target_compile_options(${whichlib} PRIVATE -Wall -Werror -Wno-deprecated-declarations -Wno-tautological-compare)
   endif()
 
   if (WIN32)
     # /Wall is a bit too chatty so we stick with /W3
     # /bigobj needed because ticking/immer_table_state.cc compiles to something too large apparently
-    target_compile_options(${whichlib} PRIVATE /W3 /bigobj)
+    target_compile_options(${whichlib} PRIVATE /W3 /bigobj /MP)
 
     target_compile_definitions(${whichlib} PRIVATE _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     target_link_libraries(${whichlib} PRIVATE ws2_32)

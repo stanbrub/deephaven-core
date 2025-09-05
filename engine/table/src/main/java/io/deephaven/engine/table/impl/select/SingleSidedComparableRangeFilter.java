@@ -18,11 +18,24 @@ import org.jetbrains.annotations.NotNull;
 public class SingleSidedComparableRangeFilter extends AbstractRangeFilter {
     private final Comparable<?> pivot;
     private final boolean isGreaterThan;
+    private Class<?> columnType;
 
     SingleSidedComparableRangeFilter(String columnName, Comparable<?> val, boolean inclusive, boolean isGreaterThan) {
         super(columnName, inclusive, inclusive);
         this.isGreaterThan = isGreaterThan;
         pivot = val;
+    }
+
+    public Comparable<?> getPivot() {
+        return pivot;
+    }
+
+    public boolean isGreaterThan() {
+        return isGreaterThan;
+    }
+
+    public Class<?> getColumnType() {
+        return columnType;
     }
 
     @TestUseOnly
@@ -42,9 +55,9 @@ public class SingleSidedComparableRangeFilter extends AbstractRangeFilter {
             throw new RuntimeException("Column \"" + columnName + "\" doesn't exist in this table, available columns: "
                     + tableDefinition.getColumnNames());
         }
-
-        Assert.assertion(Comparable.class.isAssignableFrom(def.getDataType()),
-                "Comparable.class.isAssignableFrom(def.getDataType())", def.getDataType(), "def.getDataType()");
+        columnType = def.getDataType();
+        Assert.assertion(Comparable.class.isAssignableFrom(columnType), "Comparable.class.isAssignableFrom(columnType)",
+                columnType, "columnType");
 
         chunkFilter = makeComparableChunkFilter(pivot, lowerInclusive, isGreaterThan);
     }
@@ -68,9 +81,10 @@ public class SingleSidedComparableRangeFilter extends AbstractRangeFilter {
     @Override
     public WhereFilter copy() {
         final SingleSidedComparableRangeFilter copy =
-                new SingleSidedComparableRangeFilter(columnName, pivot, lowerInclusive, upperInclusive);
+                new SingleSidedComparableRangeFilter(columnName, pivot, lowerInclusive, isGreaterThan);
         copy.chunkFilter = chunkFilter;
         copy.longFilter = longFilter;
+        copy.columnType = columnType;
         return copy;
     }
 

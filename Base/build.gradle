@@ -17,19 +17,7 @@ dependencies {
     testImplementation libs.jmock.junit4
     testImplementation libs.jmock.imposters
     testImplementation project(":base-test-utils")
-}
-
-sourceSets {
-    main {
-        resources {
-            srcDir 'src/main/java' exclude '**/*.java'
-        }
-    }
-    test {
-        resources {
-            srcDir 'src/test/java' exclude '**/*.java'
-        }
-    }
+    testImplementation libs.assertj
 }
 
 // TODO (core#116): Gradle test fixtures
