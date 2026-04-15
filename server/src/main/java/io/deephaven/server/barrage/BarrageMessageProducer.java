@@ -1726,9 +1726,6 @@ public class BarrageMessageProducer extends LivenessArtifact
             // Each delta's addChunks contain exactly its recordedAdds rows in order, so concatenation
             // produces the correct combined add data matching the synthesized recordedAdds RowSet.
 
-            // TODO: check JSAPI before merging, might have to condense into SNAPSHOT_CHUNK_SIZE chunks to avoid
-            // breaking the web client with too many chunks (batches) in a single message.
-
             // noinspection unchecked
             final WritableChunk<Values>[][] blinkAddChunks = new WritableChunk[chunkSources.length][];
             if (hasDelta) {
