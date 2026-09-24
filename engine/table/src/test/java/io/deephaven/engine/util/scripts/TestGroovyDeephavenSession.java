@@ -489,8 +489,26 @@ public class TestGroovyDeephavenSession {
             c = "z = " + z + "; \n" + "d = " + d + "; \n" +
                     "m2 = max(" + Arrays.toString(a).substring(1, Arrays.toString(a).length() - 1) + ", z, d);\n";
             session.evaluateScript(c).throwIfError();
-            Double wrapperMax = session.getQueryScope().readParamValue("m2");
-            assertEquals(5.0d, wrapperMax, 0.0d);
+            // "d = 5.0" is an untyped Groovy decimal literal, so it is a BigDecimal. Groovy 4.0.4+ scores
+            // max(float...) below max(double...) for an argument list that mixes integral values with a
+            // BigDecimal, so this yields a Float where Groovy 3 yielded a Double. Assert the value rather than
+            // the box type. This affects only expressions Groovy itself evaluates; query language formulas are
+            // parsed by QueryLanguageParser, where 5.0 is a double literal and the result is a double.
+            final Number wrapperMax = session.getQueryScope().readParamValue("m2");
+            assertEquals(5.0d, wrapperMax.doubleValue(), 0.0d);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail("Fail for : \n" + c);
+        }
+
+        try {
+            // A typed double literal keeps the argument list unambiguous, which is the recommended workaround
+            // for scripts that require a Double.
+            c = "z = " + z + "; \n" +
+                    "m3 = max(" + Arrays.toString(a).substring(1, Arrays.toString(a).length() - 1) + ", z, 5.0d);\n";
+            session.evaluateScript(c).throwIfError();
+            final Double typedMax = session.getQueryScope().readParamValue("m3");
+            assertEquals(5.0d, typedMax, 0.0d);
         } catch (Exception e) {
             e.printStackTrace();
             fail("Fail for : \n" + c);
