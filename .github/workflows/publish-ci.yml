@@ -145,8 +145,10 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_PUBLISH_FAILURE }}
           webhook-type: webhook-trigger
+          errors: true
+          # The steps context has no id property, so the expression was always empty.
           payload: |
-            step_id: "${{ steps.publish-deephaven-core.id }}"
+            step_id: "publish-deephaven-core"
             action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -154,8 +156,9 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_PUBLISH_FAILURE }}
           webhook-type: webhook-trigger
+          errors: true
           payload: |
-            step_id: "${{ steps.publish-deephaven-server.id }}"
+            step_id: "publish-deephaven-server"
             action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -163,8 +166,9 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_PUBLISH_FAILURE }}
           webhook-type: webhook-trigger
+          errors: true
           payload: |
-            step_id: "${{ steps.publish-pydeephaven.id }}"
+            step_id: "publish-pydeephaven"
             action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -172,8 +176,9 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_PUBLISH_FAILURE }}
           webhook-type: webhook-trigger
+          errors: true
           payload: |
-            step_id: "${{ steps.publish-pydeephaven-ticking.id }}"
+            step_id: "publish-pydeephaven-ticking"
             action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
@@ -181,6 +186,7 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_PUBLISH_FAILURE }}
           webhook-type: webhook-trigger
+          errors: true
           payload: |
-            step_id: "${{ steps.publish-deephaven-jsapi-types.id }}"
+            step_id: "publish-deephaven-jsapi-types"
             action_url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -117,6 +117,8 @@ jobs:
         if: ${{ failure() && github.repository_owner == 'deephaven' && github.ref == 'refs/heads/main' }}
         with:
           webhook-type: webhook-trigger
+          # Fail the step if the alert cannot be delivered; the default hides it.
+          errors: true
           payload: |
             {
               "slack_message": "Nightly build failure in ${{ matrix.gradle-task }} on Java ${{ matrix.test-jvm-version }} @ ${{ github.head_ref }} ${{ github.sha }} ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

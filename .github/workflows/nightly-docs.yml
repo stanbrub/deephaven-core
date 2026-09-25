@@ -63,6 +63,8 @@ jobs:
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL_DEVREL}}
           webhook-type: webhook-trigger
+          # Fail the step if the alert cannot be delivered; the default hides it.
+          errors: true
           payload: |
             {
               "repository": "${{ github.repository }}",

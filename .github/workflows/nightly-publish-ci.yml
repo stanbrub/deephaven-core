@@ -51,6 +51,8 @@ jobs:
         if: failure()
         with:
           webhook-type: webhook-trigger
+          # Fail the step if the alert cannot be delivered; the default hides it.
+          errors: true
           payload: |
             {
               "slack_message": "Nightly publish failure @ ${{ github.head_ref }} ${{ github.sha }} ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
