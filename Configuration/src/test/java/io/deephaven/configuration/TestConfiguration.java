@@ -503,7 +503,8 @@ public class TestConfiguration {
                     history.get(0).fileName);
         } else if ("27".equals(javaVersion)) {
             assertEquals(
-                    "<not from configuration file>: io.deephaven.configuration.TestConfiguration.testShowHistory(TestConfiguration.java:428)\n"
+                    "<not from configuration file>: io.deephaven.configuration.TestConfiguration.testShowHistory(TestConfiguration.java:"
+                            + setPropertyLine + ")\n"
                             +
                             "java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)\n"
                             +
