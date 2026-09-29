@@ -13,7 +13,7 @@ concurrency:
 jobs:
   nightly-publish:
     runs-on: ubuntu-24.04
-    if: ${{ github.repository_owner == 'deephaven' }}
+    if: ${{ true }}
 
     steps:
       - name: Checkout
@@ -34,6 +34,8 @@ jobs:
           .github/scripts/gradle-properties.sh 21 >> gradle.properties
           cat gradle.properties
 
+      - name: TEMP force failure
+        run: exit 1
       - name: Publish to Central Portal snapshots repository
         # We are not worried here about using --no-parallel (as we are with release publishing), since publishing
         # snapshots does not even create staging repositories.
@@ -58,4 +60,4 @@ jobs:
               "slack_message": "Nightly publish failure @ ${{ github.ref_name }} ${{ github.sha }} ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_NIGHTLY_FAILURE }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_TEST_WEBHOOK }}

@@ -1,6 +1,7 @@
 name: Nightly Check CI
 
 on:
+  workflow_dispatch:
   # https://docs.github.com/en/actions/reference/events-that-trigger-workflows#schedule
   # Note: this will set GITHUB_SHA to the latest commit on the default branch.
   schedule:
@@ -15,10 +16,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gradle-task: ['check', 'testSerial', 'testParallel', 'testOutOfBand']
-        test-jvm-version: ['17', '21', '25']
+        gradle-task: ['check']
+        test-jvm-version: ['21']
 
-    if: ${{ github.repository_owner == 'deephaven' || github.event_name != 'schedule' }}
+    if: ${{ true || github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     concurrency:
       group: ${{ matrix.gradle-task }}-${{ matrix.test-jvm-version }}-${{ github.workflow }}-${{ github.ref }}
@@ -26,6 +27,8 @@ jobs:
     env:
       COVER: ${{ (github.event_name == 'schedule' || startsWith(github.ref_name, 'coverage/')) && matrix.test-jvm-version == '21' }}
     steps:
+      - name: TEMP force failure
+        run: exit 1
       - name: Free Disk Space
         uses: endersonmenezes/free-disk-space@2a22f8c59cae9cddae7194b33e6b92d023b2b4b8 # v4.0.0
         with:
@@ -102,7 +105,7 @@ jobs:
 
       - name: Publish Test Results
         uses: scacap/action-surefire-report@c38a2d74b9840ae8950a4387ae02b637421d0f39 # v1.13.0
-        if: ${{ github.repository_owner == 'deephaven' && github.ref == 'refs/heads/main' }}
+        if: ${{ true && true }}
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
         with:
@@ -114,7 +117,7 @@ jobs:
       - name: Slack Nightly Failure
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         id: slack-nightly-failure
-        if: ${{ failure() && github.repository_owner == 'deephaven' && github.ref == 'refs/heads/main' }}
+        if: ${{ failure() && true && true }}
         with:
           webhook-type: webhook-trigger
           # Fail the step if the alert cannot be delivered; the default hides it.
@@ -124,7 +127,7 @@ jobs:
               "slack_message": "Nightly build failure in ${{ matrix.gradle-task }} on Java ${{ matrix.test-jvm-version }} @ ${{ github.ref_name }} ${{ github.sha }} ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_NIGHTLY_FAILURE }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_TEST_WEBHOOK }}
           
   combined-coverage-report:
     if: ${{ github.event_name == 'schedule' || startsWith(github.ref_name, 'coverage/') }}
